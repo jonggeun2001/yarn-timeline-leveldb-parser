@@ -27,6 +27,8 @@ This product includes software developed by The Apache Software Foundation (http
 | leveldbjni-all | 1.8 | native LevelDB 및 JNI/API | [BSD-3-Clause](https://github.com/fusesource/leveldbjni/blob/leveldbjni-1.8/license.txt) |
 | FST | 2.50 | rolling 값 역직렬화 | [Apache-2.0, 배포 POM](https://repo.maven.apache.org/maven2/de/ruedigermoeller/fst/2.50/fst-2.50.pom) |
 | Apache Hadoop common, yarn-api, mapreduce-client-core | 3.1.1 | Timeline 모델·Parquet 지원 | [Apache-2.0](https://github.com/apache/hadoop/blob/rel/release-3.1.1/LICENSE.txt) |
+| Apache Hive / hive-exec core | 3.1.3 | Hive SQL 구문 분석·출력 종류 분류 | [Apache-2.0](https://github.com/apache/hive/blob/rel/release-3.1.3/LICENSE) |
+| ANTLR runtime | 3.5.2 | Hive lexer/parser 실행 | [BSD-3-Clause](https://github.com/antlr/antlr3/blob/3.5.2/runtime/Java/src/main/java/org/antlr/runtime/Token.java) |
 | Apache Parquet / parquet-avro | 1.16.0 | Parquet 생성·검증 | [Apache-2.0](https://github.com/apache/parquet-java/blob/apache-parquet-1.16.0/LICENSE) |
 | Apache Avro | 1.11.4 | 스키마와 record 모델 | [Apache-2.0](https://github.com/apache/avro/blob/release-1.11.4/LICENSE.txt) |
 | Jackson | 2.19.2 | JSON 매핑·라이브러리 지원 | [Apache-2.0, 배포 POM](https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.19.2/jackson-databind-2.19.2.pom) |
@@ -46,7 +48,40 @@ Parquet의 Snappy 압축에는 전이 의존성인 `org.xerial.snappy:snappy-jav
 
 ## 비 Apache 라이선스 고지
 
-아래에는 LevelDB JNI, 포함된 native LevelDB/Snappy, SLF4J의 라이선스 고지를 보존합니다. Snappy의 별도 라이선스 benchmark 데이터는 이 프로젝트의 입력 fixture로 사용하지 않습니다.
+아래에는 LevelDB JNI, 포함된 native LevelDB/Snappy, ANTLR, SLF4J의 라이선스 고지를 보존합니다. Snappy의 별도 라이선스 benchmark 데이터는 이 프로젝트의 입력 fixture로 사용하지 않습니다.
+
+### ANTLR Java runtime — BSD-3-Clause
+
+[원본 Java runtime 소스](https://github.com/antlr/antlr3/tree/3.5.2/runtime/Java/src/main/java/org/antlr/runtime)의 저작권과 라이선스 고지입니다.
+
+```text
+Copyright (c) 2005-2009 Terence Parr
+Copyright (c) 2012 Terence Parr
+Copyright (c) 2012 Sam Harwell
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+3. The name of the author may not be used to endorse or promote products
+   derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ### LevelDB JNI — BSD-3-Clause
 

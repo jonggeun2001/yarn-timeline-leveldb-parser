@@ -185,7 +185,7 @@ public final class DagCollector {
             if (start != null && end != null && end < start)
                 warn(entry.getKey(), "endTime", "endTime precedes startTime", "null");
             records.add(MetricsExtractor.extract(entry.getKey(), state.applicationId, fields, state.counters,
-                    resolver, state.automaticRowsTrusted));
+                    state.queryKind, resolver, state.automaticRowsTrusted));
         }
         records.sort(Comparator.comparing((DagRecord record) -> (String) record.get("applicationId"))
                 .thenComparing(record -> (String) record.get("dagId")));
@@ -261,6 +261,11 @@ public final class DagCollector {
         if (!(planObject instanceof Map)) {
             invalidateCallerContext(state, dagId, "expected dagPlan object");
             return;
+        }
+        HiveSqlClassifier.Kind queryKind = HiveQueryMetadata.read((Map<?, ?>) planObject);
+        if (queryKind != null) {
+            state.queryKind = state.queryKind == null || state.queryKind == queryKind
+                    ? queryKind : HiveSqlClassifier.Kind.UNSUPPORTED;
         }
         Object context = ((Map<?, ?>) planObject).get("dagContext");
         if (context == null) return;
@@ -444,6 +449,7 @@ public final class DagCollector {
 
     private static final class State {
         private final String applicationId;
+        private HiveSqlClassifier.Kind queryKind;
         private final Map<String, Object> fields = new HashMap<>();
         private final Map<String, Set<String>> filters = new HashMap<>();
         private final Map<String, Long> eventTimes = new HashMap<>();

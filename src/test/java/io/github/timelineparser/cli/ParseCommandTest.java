@@ -1,6 +1,7 @@
 package io.github.timelineparser.cli;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.timelineparser.fixture.RollingStoreFixture;
 import io.github.timelineparser.fixture.LogCapture;
 import java.io.StringWriter;
@@ -106,7 +107,7 @@ class ParseCommandTest {
         assertEquals(1, rows(output).size());
     }
 
-    @Test void usesVerifiedSelectAndCtasMappingsInTheFullPipeline() throws Exception {
+    @Test void usesExplicitSelectAndCtasOverridesInTheFullPipeline() throws Exception {
         Path input = fixture(true);
         Path output = temp.resolve("output");
         Path mapping = temp.resolve("mapping.json");
@@ -128,6 +129,67 @@ class ParseCommandTest {
                 assertNull(reader.read());
             }
         }
+    }
+
+    @Test void selectsCountersFromSqlMetadataWithBothDestinationIdsPresent() throws Exception {
+        List<SqlCase> cases = Arrays.asList(
+                new SqlCase("SELECT id FROM source_table", 42L, "RECORDS_OUT_0"),
+                new SqlCase("CREATE TABLE target_table AS SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT INTO TABLE target_table SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT OVERWRITE TABLE target_table SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT INTO TABLE target_table PARTITION (ds='2026-01-01') SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT INTO TABLE target_table PARTITION (ds) SELECT id, ds FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT OVERWRITE TABLE target_table PARTITION (ds='2026-01-01') SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT OVERWRITE TABLE target_table PARTITION (ds) SELECT id, ds FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT OVERWRITE DIRECTORY '/tmp/query-output' SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("FROM source_table INSERT INTO TABLE target_a SELECT id INSERT INTO TABLE target_b SELECT id", null, null));
+        Map<String, SqlCase> expected = new LinkedHashMap<>();
+        List<TimelineEntity> entities = new ArrayList<>();
+        for (int index = 0; index < cases.size(); index++) {
+            String dagId = "dag_1700000000000_0001_" + (index + 1);
+            TimelineEntity dag = dagWithTimes(1700000000100L, 1700000001100L);
+            dag.setEntityId(dagId);
+            dag.addOtherInfo("callerId", "hive-query-" + dagId);
+            entities.add(dag);
+            entities.add(sqlExtraInfo(dagId, cases.get(index).sql));
+            expected.put(dagId, cases.get(index));
+        }
+        entities.add(completedApplication());
+        Path input = RollingStoreFixture.write(temp.resolve("sql-input"), entities.toArray(new TimelineEntity[0]));
+        Path output = temp.resolve("sql-output");
+
+        assertEquals(0, run("--input", input.toString(), "--output", output.toString()));
+
+        Set<String> seen = new HashSet<>();
+        try (ParquetReader<GenericRecord> reader = AvroParquetReader.<GenericRecord>builder(new LocalInputFile(output.resolve("result.parquet")))
+                .withConf(new PlainParquetConfiguration()).build()) {
+            GenericRecord row;
+            while ((row = reader.read()) != null) {
+                String dagId = row.get("dagId").toString();
+                assertTrue(seen.add(dagId), "Duplicate DAG " + dagId);
+                SqlCase query = expected.get(dagId);
+                assertNotNull(query, "Unexpected DAG " + dagId);
+                assertEquals(query.rows, row.get("resultRows"), query.sql);
+                if (query.rows == null) {
+                    assertNull(row.get("resultRowsKind"), query.sql);
+                    assertNull(row.get("resultRowsSource"), query.sql);
+                } else {
+                    assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString(), query.sql);
+                    assertEquals(query.counter, row.get("resultRowsSource").toString(), query.sql);
+                }
+                assertEquals(20, row.getSchema().getFields().size());
+                assertEquals(APP, row.get("applicationId").toString());
+                assertEquals("hive-query-" + dagId, row.get("hiveQueryId").toString());
+                assertEquals(120L, row.get("cpuMilliseconds"));
+                assertEquals(1700000000100L, row.get("startTime"));
+                assertEquals(1700000001100L, row.get("endTime"));
+                assertEquals(1000L, row.get("durationMilliseconds"));
+            }
+        }
+        assertEquals(expected.keySet(), seen);
+        List<String> first = rows(output);
+        assertEquals(0, run("--input", input.toString(), "--output", output.toString()));
+        assertEquals(first, rows(output), "SQL selection must remain identical on rerun");
     }
 
     @Test void keepsLatestEventAndOtherInfoTimestampsAndLogsConflicts() throws Exception {
@@ -258,6 +320,40 @@ class ParseCommandTest {
             while ((row = reader.read()) != null) rows.add(row.toString());
         }
         return rows;
+    }
+
+    private TimelineEntity sqlExtraInfo(String dagId, String sql) throws Exception {
+        TimelineEntity extra = RollingStoreFixture.entity("TEZ_DAG_EXTRA_INFO", dagId, 1700000000000L);
+        Map<String, String> dagInfo = new LinkedHashMap<>();
+        dagInfo.put("context", "Hive");
+        dagInfo.put("description", sql);
+        extra.addOtherInfo("dagPlan", Collections.singletonMap("dagInfo", new ObjectMapper().writeValueAsString(dagInfo)));
+        Map<String, Object> hive = new LinkedHashMap<>();
+        hive.put("counterGroupName", "HIVE");
+        hive.put("counters", Arrays.asList(counter("RECORDS_OUT_0", 42L), counter("RECORDS_OUT_1", 999L)));
+        Map<String, Object> task = new LinkedHashMap<>();
+        task.put("counterGroupName", "org.apache.tez.common.counters.TaskCounter");
+        task.put("counters", Collections.singletonList(counter("CPU_MILLISECONDS", 120L)));
+        extra.addOtherInfo("counters", Collections.singletonMap("counterGroups", Arrays.asList(hive, task)));
+        return extra;
+    }
+
+    private Map<String, Object> counter(String name, long value) {
+        Map<String, Object> counter = new LinkedHashMap<>();
+        counter.put("counterName", name);
+        counter.put("counterValue", value);
+        return counter;
+    }
+
+    private static final class SqlCase {
+        private final String sql;
+        private final Long rows;
+        private final String counter;
+        private SqlCase(String sql, Long rows, String counter) {
+            this.sql = sql;
+            this.rows = rows;
+            this.counter = counter;
+        }
     }
 
     private Path fixture(boolean completed) throws Exception {
