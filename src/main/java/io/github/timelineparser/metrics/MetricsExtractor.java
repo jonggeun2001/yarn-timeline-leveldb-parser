@@ -55,6 +55,7 @@ final class MetricsExtractor {
         result.put("failedTaskAttempts", nonnegative(number(fields.get("numFailedTaskAttempts"), dagId + "/numFailedTaskAttempts")));
         result.put("resultRowsKind", null);
         result.put("resultRowsSource", null);
+        result.put("query", fields.get("query"));
         resolver.resolve(dagId, (String) fields.get("status"), counters, result, automaticRowsTrusted);
         return new DagRecord(result);
     }

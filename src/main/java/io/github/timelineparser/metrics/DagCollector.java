@@ -150,6 +150,7 @@ public final class DagCollector {
             if (event.getTimestamp() < 0) invalidateField(state, name, dagId, "negative event timestamp");
             else mergeTimestamp(state.eventTimes, name, event.getTimestamp(), dagId);
         }
+        collectQuery(dagId, info.get("dagPlan"), state);
         collectCallerContext(dagId, info.get("dagPlan"), state);
         try {
             collectCounters(dagId, info.get("counters"), state);
@@ -254,6 +255,22 @@ public final class DagCollector {
         }
         if ("callerType".equals(name) && !"HIVE_QUERY_ID".equals(value)) state.explicitNonHive = true;
         merge(state.fields, state.invalidFields, name, value, dagId);
+    }
+
+    private void collectQuery(String dagId, Object planObject, State state) {
+        if (planObject == null || state.invalidFields.contains("query")) return;
+        if (!(planObject instanceof Map)) {
+            invalidateField(state, "query", dagId, "expected dagPlan object");
+            return;
+        }
+        String query;
+        try {
+            query = HiveQueryText.read((Map<?, ?>) planObject);
+        } catch (IOException | RuntimeException exception) {
+            invalidateField(state, "query", dagId, "malformed Hive query metadata");
+            return;
+        }
+        merge(state.fields, state.invalidFields, "query", query, dagId);
     }
 
     private void collectCallerContext(String dagId, Object planObject, State state) {

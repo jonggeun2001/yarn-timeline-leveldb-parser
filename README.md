@@ -14,6 +14,8 @@ java -jar timeline-parser-0.0.2-all.jar \
 
 결과는 `<output>/result.parquet`이며 DAG 하나당 한 행입니다. 재실행하면 입력 전체로 결과를 교체합니다. 교체 전 실패하면 기존 파일을 보존하고, 같은 출력 경로의 동시 실행은 거부합니다. 처리 대상이 없는 정상 입력은 0행 파일을 만듭니다.
 
+마지막 `query` 컬럼에는 Hive Timeline에 기록된 SQL을 공백·줄바꿈·주석 그대로 저장하며, 없으면 `null`입니다. Hive `dagInfo`의 원문을 우선 사용하고, 없으면 마스킹되었을 수 있는 `dagContext` 기록을 사용합니다. Hive가 변수 치환 후 기록한 텍스트를 읽으므로 제출 전 텍스트를 복원하지는 않습니다. 출력 메타데이터의 `timeline.schema.version`은 `2`이며, 기존 컬럼 순서는 유지합니다. 자세한 출처와 처리 규칙은 [출력 컬럼](docs/reference/schema.md)을 참고하세요.
+
 - 입력: `entity-ldb.*` DB 하나 또는 여러 DB를 담은 상위 디렉터리.
 - 운영 DB 대신 `CURRENT`, `MANIFEST`, SST, 필요한 WAL을 갖춘 **일관된 사본**을 사용하고 실행 중에는 변경하지 않습니다. `indexes-ldb`, `starttime-ldb`는 필요 없습니다.
 - 입력·출력 경로는 서로 겹치지 않아야 합니다. 예제의 `local/`은 Git에서 제외됩니다.
@@ -62,6 +64,8 @@ DB 자체의 검증·읽기에 실패하면 다른 정상 DB는 계속 스캔하
 | `3` | 출력 경로 잠금 획득 실패 |
 
 CLI 진행상황은 표준 출력으로, WARN·ERROR는 SLF4J와 `slf4j-simple`을 통해 기본적으로 표준 오류로 기록합니다. 로그에는 시각·로거 이름과 추적 가능한 DB·DAG·필드 정보를 포함하며, 예외가 있는 경우 원인 예외도 기록합니다. 파일 저장 등 로그 설정은 [빌드·릴리스](docs/development/releases.md)를 참고하세요.
+
+`query`의 형식 오류나 값 충돌도 경고 후 `null`로 무효화하며, 이후 정상값이 있어도 복구하지 않습니다. SQL 원문은 로그에 남기지 않습니다.
 
 [출력 컬럼](docs/reference/schema.md) · [빌드·릴리스](docs/development/releases.md)
 

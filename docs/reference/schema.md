@@ -3,6 +3,8 @@
 완료 application의 DAG당 한 행입니다. Hive 쿼리가 여러 DAG를 실행하면 여러 행이며, DAG 없는 FETCH 쿼리는 포함되지 않습니다.
 `dagId`·`applicationId`만 필수입니다. 시각은 UTC 밀리초 `TIMESTAMP`, 숫자는 64비트 정수 `INT64`입니다.
 
+Parquet 메타데이터는 `timeline.schema.version=2`입니다. 버전 `1`의 컬럼과 순서를 유지하고, 마지막에 nullable `STRING` 컬럼 `query`를 추가했습니다.
+
 | 필드 | 타입 | 의미 |
 | --- | --- | --- |
 | `dagId` | STRING | DAG 식별자 |
@@ -25,6 +27,7 @@
 | `failedTaskAttempts` | INT64 | 실패한 태스크 시도 수 |
 | `resultRowsKind` | STRING | 자동 추출: `FILE_SINK_OUTPUT`; override: `SELECT_RESULT` 또는 `CTAS_WRITE` |
 | `resultRowsSource` | STRING | 결과 행 수의 근거 카운터 이름 |
+| `query` | STRING | Hive Timeline에 기록된 SQL. 없거나 무효화되면 `null` |
 
 - 유효한 `startTime`·`endTime`은 `otherInfo`와 `DAG_STARTED`·`DAG_FINISHED` 이벤트에서 수집한 값 중 각각 가장 늦은 시각입니다. 서로 다른 정상값은 경고를 남기고 병합하며, 입력 순서는 결과에 영향을 주지 않습니다.
 - 누락 지표는 `null`이며, 실제 `0`과 구분합니다. 선택 필드·카운터의 형식 오류·음수·INT64 범위 초과 또는 시각 외 값의 충돌은 해당 값을 `null`로 무효화하며, 이후 정상값이 있어도 복구하지 않습니다.
@@ -32,6 +35,12 @@
 - 잘못된 DAG ID나 소속 application ID 불일치가 발견된 DAG는 행 전체를 제외합니다.
 - CPU·GC는 DAG가 보고한 태스크 누적값으로, 실제 경과시간과 다릅니다.
 - `callerType`이 Hive 이외로 명시되면 제외합니다. 값이 없으면 DAG를 포함하되 `hiveQueryId`는 `null`입니다.
+
+`query`는 Hive `otherInfo.dagPlan.dagInfo`의 JSON `description`을 우선 사용하고, 없으면 Hive `otherInfo.dagPlan.dagContext.description`을 사용합니다. `dagInfo`는 Hive가 변수 치환 후 기록한 SQL이며, `dagContext`는 마스킹되었을 수 있습니다. 제출 전 텍스트를 복원하지 않으며, 기록된 공백·줄바꿈·주석을 그대로 보존합니다. 이 컬럼을 채울 때 SQL 내용 분류나 정규화를 하지 않습니다.
+
+원문이 없으면 `query`는 `null`입니다. 형식 오류나 같은 DAG에서 선택된 값의 충돌은 원문을 로그에 노출하지 않는 경고를 남기고 `null`로 무효화하며, 이후 정상값이 있어도 복구하지 않습니다. 두 출처의 값이 다르면 위 우선순위를 적용합니다.
+
+출처는 Apache Hive 3.1.3의 [Driver](https://github.com/apache/hive/blob/rel/release-3.1.3/ql/src/java/org/apache/hadoop/hive/ql/Driver.java#L486)·[TezTask](https://github.com/apache/hive/blob/rel/release-3.1.3/ql/src/java/org/apache/hadoop/hive/ql/exec/tez/TezTask.java#L374)와 Apache Tez 0.9.2의 [DAGUtils](https://github.com/apache/tez/blob/rel/release-0.9.2/tez-dag/src/main/java/org/apache/tez/dag/history/utils/DAGUtils.java#L159)에서 확인할 수 있습니다.
 
 `resultRows`는 `SUCCEEDED` DAG의 모든 그룹에서 이름이 `^RECORDS_OUT_[0-9]+(?:_.+)?$`에 일치하는 카운터를 찾습니다. 서로 다른 `(group, name)` 후보가 정확히 하나이면 0 이상인 원본 INT64 값을 그대로 기록하고, `resultRowsSource`에 카운터 이름을 넣습니다. 후보 없음·여러 후보(다른 그룹의 같은 이름 포함)·음수·비성공 DAG는 null입니다. 숫자 ID가 없는 `RECORDS_OUT_INTERMEDIATE`·`RECORDS_OUT_OPERATOR_*` 및 일반 `OUTPUT_RECORDS`는 제외합니다.
 

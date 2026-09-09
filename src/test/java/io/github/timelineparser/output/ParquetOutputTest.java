@@ -30,8 +30,10 @@ class ParquetOutputTest {
     @TempDir Path directory;
 
     @Test
-    void roundTripsNullableMetricsUtcTimestampsAndLargeInt64WithContractSchema() throws Exception {
+    void roundTripsNullableMetricsUtcTimestampsLargeInt64AndOriginalQueryWithContractSchema() throws Exception {
         Map<String, Object> values = requiredValues("dag_1_0001_1");
+        String query = "  -- 분석 쿼리 원문\r\nSELECT\t'서울 🐝' AS city /* 주석 */\nFROM events;  \n";
+        values.put("query", query);
         values.put("user", "분석가");
         values.put("hiveQueryId", "query-1");
         values.put("startTime", 1788912000123L);
@@ -59,6 +61,7 @@ class ParquetOutputTest {
             assertEquals("application_1_0001", row.get("applicationId").toString());
             assertEquals("분석가", row.get("user").toString());
             assertEquals("query-1", row.get("hiveQueryId").toString());
+            assertEquals(query, row.get("query").toString());
             assertEquals(1788912000123L, row.get("startTime"));
             assertEquals(1788912001123L, row.get("endTime"));
             assertEquals(4294967296L, row.get("cpuMilliseconds"));
@@ -77,7 +80,7 @@ class ParquetOutputTest {
             assertNull(row.get("resultRowsSource"));
             GenericRecord sparse = reader.read();
             assertEquals("dag_1_0001_2", sparse.get("dagId").toString());
-            for (String field : Arrays.asList("user", "startTime", "endTime", "cpuMilliseconds", "gcMilliseconds")) {
+            for (String field : Arrays.asList("user", "startTime", "endTime", "cpuMilliseconds", "gcMilliseconds", "query")) {
                 assertNull(sparse.get(field), field);
             }
             assertNull(reader.read());
@@ -88,7 +91,7 @@ class ParquetOutputTest {
             assertEquals(Arrays.asList("dagId", "applicationId", "user", "hiveQueryId", "startTime", "endTime",
                     "resultRows", "cpuMilliseconds", "status", "queueName", "durationMilliseconds", "gcMilliseconds",
                     "hdfsBytesRead", "hdfsBytesWritten", "shuffleBytes", "additionalSpillBytesWritten", "totalTasks",
-                    "failedTaskAttempts", "resultRowsKind", "resultRowsSource"),
+                    "failedTaskAttempts", "resultRowsKind", "resultRowsSource", "query"),
                     footer.getFileMetaData().getSchema().getFields().stream().map(Type::getName).collect(Collectors.toList()));
             assertTrue(footer.getFileMetaData().getSchema().getType("dagId").isRepetition(Type.Repetition.REQUIRED));
             assertTrue(footer.getFileMetaData().getSchema().getType("applicationId").isRepetition(Type.Repetition.REQUIRED));
@@ -98,7 +101,12 @@ class ParquetOutputTest {
                     timestamp.getLogicalTypeAnnotation());
             assertEquals(PrimitiveType.PrimitiveTypeName.INT64,
                     footer.getFileMetaData().getSchema().getType("cpuMilliseconds").asPrimitiveType().getPrimitiveTypeName());
-            assertEquals("1", footer.getFileMetaData().getKeyValueMetaData().get("timeline.schema.version"));
+            PrimitiveType queryType = footer.getFileMetaData().getSchema().getType("query").asPrimitiveType();
+            assertTrue(queryType.isRepetition(Type.Repetition.OPTIONAL));
+            assertEquals(PrimitiveType.PrimitiveTypeName.BINARY, queryType.getPrimitiveTypeName());
+            assertEquals(LogicalTypeAnnotation.stringType(), queryType.getLogicalTypeAnnotation());
+            assertEquals("2", footer.getFileMetaData().getKeyValueMetaData().get("timeline.schema.version"));
+            assertEquals("2", footer.getFileMetaData().getKeyValueMetaData().get("timeline.row.count"));
             assertEquals(System.getProperty("parser.version"), footer.getFileMetaData().getKeyValueMetaData().get("timeline.parser.version"));
             assertEquals("tez-0.9.1-v1", footer.getFileMetaData().getKeyValueMetaData().get("timeline.mapping.version"));
             footer.getBlocks().forEach(block -> block.getColumns().forEach(column ->
@@ -120,7 +128,13 @@ class ParquetOutputTest {
         }
         try (ParquetFileReader reader = ParquetFileReader.open(new LocalInputFile(file))) {
             assertEquals(0L, reader.getRecordCount());
-            assertEquals(20, reader.getFooter().getFileMetaData().getSchema().getFieldCount());
+            assertEquals(21, reader.getFooter().getFileMetaData().getSchema().getFieldCount());
+            PrimitiveType queryType = reader.getFooter().getFileMetaData().getSchema().getType("query").asPrimitiveType();
+            assertTrue(queryType.isRepetition(Type.Repetition.OPTIONAL));
+            assertEquals(PrimitiveType.PrimitiveTypeName.BINARY, queryType.getPrimitiveTypeName());
+            assertEquals(LogicalTypeAnnotation.stringType(), queryType.getLogicalTypeAnnotation());
+            assertEquals("2", reader.getFooter().getFileMetaData().getKeyValueMetaData().get("timeline.schema.version"));
+            assertEquals("0", reader.getFooter().getFileMetaData().getKeyValueMetaData().get("timeline.row.count"));
         }
     }
 
