@@ -10,12 +10,13 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Reads an unambiguous Hive FileSink counter, with optional per-DAG overrides. */
 public final class ResultRowsResolver {
     // Hive FileSinkOperator uses the numeric destination ID, optionally followed by the table name.
-    private static final Pattern FILE_SINK_COUNTER = Pattern.compile("RECORDS_OUT_[0-9]+(?:_.+)?");
+    private static final Pattern FILE_SINK_COUNTER = Pattern.compile("RECORDS_OUT_([0-9]+)(?:_.+)?");
     private final Map<String, Mapping> mappings;
 
     public ResultRowsResolver() { this.mappings = Collections.emptyMap(); }
@@ -66,7 +67,8 @@ public final class ResultRowsResolver {
                 : mapping.group.equals(group) && mapping.counter.equals(name);
     }
 
-    void resolve(String dagId, String status, Map<String, Long> counters, Map<String, Object> result) {
+    void resolve(String dagId, String status, Map<String, Long> counters,
+                 HiveSqlClassifier.Kind queryKind, Map<String, Object> result) {
         if (!"SUCCEEDED".equals(status)) return;
         Mapping mapping = mappings.get(dagId);
         if (mapping != null) {
@@ -74,12 +76,17 @@ public final class ResultRowsResolver {
                     mapping.kind, mapping.counter, result);
             return;
         }
+        if (queryKind == HiveSqlClassifier.Kind.UNSUPPORTED) return;
+
+        // Hive retains ID 0 for SELECT results and starts registered write destinations at ID 1.
+        String destination = queryKind == null ? null : queryKind == HiveSqlClassifier.Kind.SELECT ? "0" : "1";
 
         String selectedName = null;
         Long selectedCount = null;
         for (Map.Entry<String, Long> counter : counters.entrySet()) {
             String name = counter.getKey().substring(counter.getKey().indexOf('\u0000') + 1);
-            if (!FILE_SINK_COUNTER.matcher(name).matches()) continue;
+            Matcher match = FILE_SINK_COUNTER.matcher(name);
+            if (!match.matches() || (destination != null && !destination.equals(match.group(1)))) continue;
             // Distinct groups also represent distinct candidates. Never sum or choose the largest.
             if (selectedName != null) return;
             selectedName = name;

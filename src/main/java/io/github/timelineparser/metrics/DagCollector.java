@@ -91,6 +91,11 @@ public final class DagCollector {
         Object planObject = info.get("dagPlan");
         if (planObject != null) {
             Map<?, ?> plan = objectMap(planObject, dagId + "/dagPlan");
+            HiveSqlClassifier.Kind queryKind = HiveQueryMetadata.read(plan);
+            if (queryKind != null) {
+                state.queryKind = state.queryKind == null || state.queryKind == queryKind
+                        ? queryKind : HiveSqlClassifier.Kind.UNSUPPORTED;
+            }
             Object contextObject = plan.get("dagContext");
             if (contextObject != null) {
                 Map<?, ?> context = objectMap(contextObject, dagId + "/dagContext");
@@ -143,7 +148,8 @@ public final class DagCollector {
                 mergeTimestamp(fields, time.getKey(), time.getValue(), entry.getKey());
             if (!isHiveCandidate(fields)) continue;
             if (!state.hasBaseEntity) throw new IOException("Missing TEZ_DAG_ID entity for " + entry.getKey());
-            records.add(MetricsExtractor.extract(entry.getKey(), state.applicationId, fields, state.counters, resolver));
+            records.add(MetricsExtractor.extract(entry.getKey(), state.applicationId, fields,
+                    state.counters, state.queryKind, resolver));
         }
         records.sort(Comparator.comparing((DagRecord record) -> (String) record.get("applicationId"))
                 .thenComparing(record -> (String) record.get("dagId")));
@@ -235,6 +241,7 @@ public final class DagCollector {
     }
     private static final class State {
         private final String applicationId;
+        private HiveSqlClassifier.Kind queryKind;
         private final Map<String, Object> fields = new HashMap<>();
         private final Map<String, Set<String>> filters = new HashMap<>();
         private final Map<String, Long> eventTimes = new HashMap<>();

@@ -26,7 +26,8 @@ final class MetricsExtractor {
     static boolean needsCounter(String group, String name) { return COUNTERS.containsValue(counterKey(group, name)); }
 
     static DagRecord extract(String dagId, String applicationId, Map<String, Object> fields,
-                             Map<String, Long> counters, ResultRowsResolver resolver) throws IOException {
+                             Map<String, Long> counters, HiveSqlClassifier.Kind queryKind,
+                             ResultRowsResolver resolver) throws IOException {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("dagId", dagId);
         result.put("applicationId", applicationId);
@@ -49,7 +50,7 @@ final class MetricsExtractor {
         result.put("failedTaskAttempts", nonnegative(number(fields.get("numFailedTaskAttempts"), dagId + "/numFailedTaskAttempts")));
         result.put("resultRowsKind", null);
         result.put("resultRowsSource", null);
-        resolver.resolve(dagId, (String) fields.get("status"), counters, result);
+        resolver.resolve(dagId, (String) fields.get("status"), counters, queryKind, result);
         return new DagRecord(result);
     }
 

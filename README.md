@@ -34,9 +34,9 @@ WARN Conflicting timestamp at dag_1700000000000_0001_1/startTime: previous=17000
 
 기본적으로 application 종료 이벤트를 확인해 완료된 application만 처리합니다. `--completed-applications`는 이 판별을 목록으로 대체하며, 빈 목록은 0행 결과를 만듭니다. 목록 없이 대상 DAG의 application 완료 근거가 하나도 없으면 오류로 종료합니다.
 
-`resultRows`는 `SUCCEEDED` DAG의 모든 그룹에서 숫자 ID가 붙은 FileSink 카운터(`RECORDS_OUT_0`, `RECORDS_OUT_0_table` 등)가 하나일 때 자동으로 채웁니다. 0 이상인 원본 INT64 값을 기록하며, `resultRowsKind`는 `FILE_SINK_OUTPUT`, `resultRowsSource`는 카운터 이름입니다. 후보가 없거나 여러 개이면(다른 그룹의 같은 이름도 별도 후보), 값이 음수이거나 DAG가 성공하지 않았으면 null입니다.
+`resultRows`는 `SUCCEEDED` DAG의 Hive SQL을 분석해 SELECT는 `RECORDS_OUT_0` 계열, CTAS·단일 INSERT INTO·INSERT OVERWRITE(TABLE/DIRECTORY)는 `RECORDS_OUT_1` 계열에서 고릅니다. 해당 번호의 카운터가 하나이고 0 이상일 때 기록하며, 여러 출력 대상·지원하지 않는 SQL·누락·모호한 후보는 null입니다. SQL이 없으면 기존처럼 유일한 숫자 FileSink 카운터를 사용합니다.
 
-이 값은 FileSink 카운터의 DAG 집계값으로, 임시 materialization 출력이나 같은 이름의 sink 합산일 수 있어 최종 SELECT/CTAS 커밋 행 수를 보장하지 않습니다.
+`resultRowsKind`는 `FILE_SINK_OUTPUT`, `resultRowsSource`는 원본 카운터 이름입니다. 값은 DAG별 출력 카운터이며, 중간 출력이나 같은 이름의 sink 합산을 포함할 수 있어 쿼리 전체의 최종 결과·테이블 커밋 행 수를 보장하지 않습니다.
 
 특정 DAG의 최종 SELECT·CTAS sink를 검증했다면 다음 JSON을 `--result-rows-mapping`으로 지정해 자동 선택을 덮어쓸 수 있습니다.
 
