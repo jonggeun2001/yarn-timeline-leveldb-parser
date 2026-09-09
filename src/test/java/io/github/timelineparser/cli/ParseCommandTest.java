@@ -24,7 +24,9 @@ class ParseCommandTest {
     @Test void transformsRealHadoopDatabaseAndReplacesRatherThanAppending() throws Exception {
         Path input = fixture(true);
         Path output = temp.resolve("output");
-        assertEquals(0, run("--input", input.toString(), "--output", output.toString()));
+        StringWriter log = new StringWriter();
+        assertEquals(0, run(log, "--input", input.toString(), "--output", output.toString()));
+        assertFalse(log.toString().contains("WARN Conflicting timestamp"));
         try (ParquetReader<GenericRecord> reader = AvroParquetReader.<GenericRecord>builder(new LocalInputFile(output.resolve("result.parquet")))
                 .withConf(new PlainParquetConfiguration()).build()) {
             GenericRecord row = reader.read();
@@ -126,14 +128,120 @@ class ParseCommandTest {
         }
     }
 
+    @Test void keepsLatestEventAndOtherInfoTimestampsAndLogsConflicts() throws Exception {
+        TimelineEntity dag = dagWithTimes(1700000000100L, 1700000000900L);
+        dag.addEvent(event("DAG_STARTED", 1700000000200L));
+        dag.addEvent(event("DAG_STARTED", 1700000000300L));
+        dag.addEvent(event("DAG_FINISHED", 1700000001000L));
+        dag.addEvent(event("DAG_FINISHED", 1700000001200L));
+        Path input = RollingStoreFixture.write(temp.resolve("input"), dag, completedApplication());
+        Path output = temp.resolve("output");
+        StringWriter log = new StringWriter();
+
+        assertEquals(0, run(log, "--input", input.toString(), "--output", output.toString()));
+
+        assertTimestamps(output, 1700000000300L, 1700000001200L, 900L);
+        assertWarning(log, "startTime", 1700000000300L, 1700000000200L, 1700000000300L);
+        assertWarning(log, "endTime", 1700000001200L, 1700000001000L, 1700000001200L);
+        assertWarning(log, "startTime", 1700000000100L, 1700000000300L, 1700000000300L);
+        assertWarning(log, "endTime", 1700000000900L, 1700000001200L, 1700000001200L);
+    }
+
+    @Test void retainsLatestTimestampsWhenEarlierSnapshotIsReadLastAndLogsConflicts() throws Exception {
+        Path input = Files.createDirectory(temp.resolve("snapshots"));
+        // The catalog sorts paths: the snapshot with larger timestamps is scanned first.
+        RollingStoreFixture.write(input.resolve("a-later"),
+                dagWithTimes(1700000000400L, 1700000001800L), completedApplication());
+        RollingStoreFixture.write(input.resolve("z-earlier"),
+                dagWithTimes(1700000000200L, 1700000001400L), completedApplication());
+        Path output = temp.resolve("output");
+        StringWriter log = new StringWriter();
+
+        assertEquals(0, run(log, "--input", input.toString(), "--output", output.toString()));
+
+        assertTimestamps(output, 1700000000400L, 1700000001800L, 1400L);
+        assertWarning(log, "startTime", 1700000000400L, 1700000000200L, 1700000000400L);
+        assertWarning(log, "endTime", 1700000001800L, 1700000001400L, 1700000001800L);
+    }
+
+    @Test void equalTimestampsAndMissingValuesDoNotProduceConflictWarnings() throws Exception {
+        Path input = Files.createDirectory(temp.resolve("snapshots"));
+        TimelineEntity dag = dagWithTimes(1700000000100L, 1700000001100L);
+        dag.addEvent(event("DAG_STARTED", 1700000000100L));
+        dag.addEvent(event("DAG_FINISHED", 1700000001100L));
+        RollingStoreFixture.write(input.resolve("a-complete"), dag, completedApplication());
+        TimelineEntity sparse = RollingStoreFixture.entity("TEZ_DAG_ID", DAG, 1700000000000L);
+        sparse.addEvent(event("DAG_STARTED", 1700000000100L));
+        sparse.addEvent(event("DAG_FINISHED", 1700000001100L));
+        TimelineEntity extra = RollingStoreFixture.entity("TEZ_DAG_EXTRA_INFO", DAG, 1700000000000L);
+        extra.addOtherInfo("startTime", 1700000000100L);
+        extra.addOtherInfo("endTime", 1700000001100L);
+        RollingStoreFixture.write(input.resolve("z-sparse"), sparse, extra);
+        Path output = temp.resolve("output");
+        StringWriter log = new StringWriter();
+
+        assertEquals(0, run(log, "--input", input.toString(), "--output", output.toString()));
+
+        assertTimestamps(output, 1700000000100L, 1700000001100L, 1000L);
+        assertFalse(log.toString().contains("WARN Conflicting timestamp"), log::toString);
+    }
+
     private int run(String... args) {
+        return run(new StringWriter(), args);
+    }
+
+    private int run(StringWriter output, String... args) {
         CommandLine cli = new CommandLine(new ParseCommand());
-        StringWriter output = new StringWriter();
-        cli.setOut(new java.io.PrintWriter(output)); cli.setErr(new java.io.PrintWriter(output));
+        StringWriter errors = new StringWriter();
+        cli.setOut(new java.io.PrintWriter(output)); cli.setErr(new java.io.PrintWriter(errors));
         int code = cli.execute(args);
-        if (code == 0 || code == 2 || output.toString().contains("completion")) return code;
+        if (code == 0 || code == 2 || errors.toString().contains("completion")) return code;
         System.err.println(output);
+        System.err.println(errors);
         return code;
+    }
+
+    private void assertTimestamps(Path output, long startTime, long endTime, long durationMilliseconds) throws Exception {
+        try (ParquetReader<GenericRecord> reader = AvroParquetReader.<GenericRecord>builder(new LocalInputFile(output.resolve("result.parquet")))
+                .withConf(new PlainParquetConfiguration()).build()) {
+            GenericRecord row = reader.read();
+            assertNotNull(row);
+            assertEquals(DAG, row.get("dagId").toString());
+            assertEquals(APP, row.get("applicationId").toString());
+            assertEquals(startTime, row.get("startTime"));
+            assertEquals(endTime, row.get("endTime"));
+            assertEquals(durationMilliseconds, row.get("durationMilliseconds"));
+            assertNull(reader.read());
+        }
+    }
+
+    private void assertWarning(StringWriter log, String field, long previous, long incoming, long selected) {
+        String expected = "WARN Conflicting timestamp at " + DAG + "/" + field
+                + ": previous=" + previous + " incoming=" + incoming + " selected=" + selected;
+        assertTrue(log.toString().contains(expected), () -> "Missing warning: " + expected + "\nCLI output:\n" + log);
+    }
+
+    private TimelineEntity dagWithTimes(long startTime, long endTime) {
+        TimelineEntity dag = RollingStoreFixture.entity("TEZ_DAG_ID", DAG, 1700000000000L);
+        dag.addOtherInfo("applicationId", APP);
+        dag.addOtherInfo("callerType", "HIVE_QUERY_ID");
+        dag.addOtherInfo("startTime", startTime);
+        dag.addOtherInfo("endTime", endTime);
+        dag.addOtherInfo("status", "SUCCEEDED");
+        return dag;
+    }
+
+    private TimelineEntity completedApplication() {
+        TimelineEntity app = RollingStoreFixture.entity("YARN_APPLICATION", APP, 1700000000000L);
+        app.addEvent(event("YARN_APPLICATION_FINISHED", 1700000002100L));
+        return app;
+    }
+
+    private TimelineEvent event(String type, long timestamp) {
+        TimelineEvent event = new TimelineEvent();
+        event.setEventType(type);
+        event.setTimestamp(timestamp);
+        return event;
     }
 
     private List<String> rows(Path output) throws Exception {

@@ -7,6 +7,7 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelineEvent;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -24,10 +25,16 @@ public final class DagCollector {
     private static final Set<String> TERMINAL_DAG_STATES = new HashSet<>(Arrays.asList("SUCCEEDED", "FAILED", "KILLED", "ERROR"));
 
     private final ResultRowsResolver resolver;
+    private final Consumer<String> warningLog;
     private final Map<String, State> dags = new TreeMap<>();
     private final Set<String> observedCompletedApps = new HashSet<>();
 
-    public DagCollector(ResultRowsResolver resolver) { this.resolver = Objects.requireNonNull(resolver, "resolver"); }
+    public DagCollector(ResultRowsResolver resolver) { this(resolver, System.err::println); }
+
+    public DagCollector(ResultRowsResolver resolver, Consumer<String> warningLog) {
+        this.resolver = Objects.requireNonNull(resolver, "resolver");
+        this.warningLog = Objects.requireNonNull(warningLog, "warningLog");
+    }
 
     /** Unique observed DAGs, including those excluded by application completion filtering. */
     public int getDagCount() { return dags.size(); }
@@ -53,8 +60,13 @@ public final class DagCollector {
                 if ("applicationId".equals(name)) validateApplication(state, (String) value, dagId);
             }
         }
-        for (String name : NUMERIC_FIELDS)
-            merge(state.fields, name, MetricsExtractor.number(info.get(name), dagId + "/" + name), dagId);
+        for (String name : NUMERIC_FIELDS) {
+            Long value = MetricsExtractor.number(info.get(name), dagId + "/" + name);
+            if ("startTime".equals(name) || "endTime".equals(name))
+                mergeTimestamp(state.fields, name, value, dagId);
+            else
+                merge(state.fields, name, value, dagId);
+        }
         for (String name : FILTER_FIELDS) {
             Set<Object> filter = entity.getPrimaryFilters().get(name);
             if (filter == null) continue;
@@ -72,9 +84,9 @@ public final class DagCollector {
         }
         for (TimelineEvent event : entity.getEvents()) {
             if ("DAG_STARTED".equals(event.getEventType()))
-                merge(state.eventTimes, "startTime", event.getTimestamp(), dagId);
+                mergeTimestamp(state.eventTimes, "startTime", event.getTimestamp(), dagId);
             if ("DAG_FINISHED".equals(event.getEventType()))
-                merge(state.eventTimes, "endTime", event.getTimestamp(), dagId);
+                mergeTimestamp(state.eventTimes, "endTime", event.getTimestamp(), dagId);
         }
         Object planObject = info.get("dagPlan");
         if (planObject != null) {
@@ -128,7 +140,7 @@ public final class DagCollector {
                 if (!candidates.isEmpty()) fields.put(filter.getKey(), candidates.iterator().next());
             }
             for (Map.Entry<String, Long> time : state.eventTimes.entrySet())
-                merge(fields, time.getKey(), time.getValue(), entry.getKey());
+                mergeTimestamp(fields, time.getKey(), time.getValue(), entry.getKey());
             if (!isHiveCandidate(fields)) continue;
             if (!state.hasBaseEntity) throw new IOException("Missing TEZ_DAG_ID entity for " + entry.getKey());
             records.add(MetricsExtractor.extract(entry.getKey(), state.applicationId, fields, state.counters, resolver));
@@ -202,6 +214,19 @@ public final class DagCollector {
         if (!(value instanceof Map)) throw new IOException("Expected object at " + location);
         return (Map<?, ?>) value;
     }
+    /** Lifecycle times use the latest timestamp, regardless of database or event iteration order. */
+    private void mergeTimestamp(Map<String, ? super Long> target, String key, Long value, String dagId) {
+        if (value == null) return;
+        Long previous = (Long) target.get(key);
+        long selected = value;
+        if (previous != null && !previous.equals(value)) {
+            selected = Math.max(previous, value);
+            warningLog.accept("WARN Conflicting timestamp at " + dagId + "/" + key
+                    + ": previous=" + previous + " incoming=" + value + " selected=" + selected);
+        }
+        target.put(key, selected);
+    }
+
     private static <T> void merge(Map<String, T> target, String key, T value, String dagId) throws IOException {
         if (value == null) return;
         T previous = target.get(key);

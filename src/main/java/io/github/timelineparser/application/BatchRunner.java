@@ -26,7 +26,10 @@ public final class BatchRunner {
         long started = System.nanoTime();
         try (OutputTransaction transaction = OutputTransaction.open(output)) {
             List<Path> databases = new LevelDbCatalog().discover(input);
-            DagCollector collector = new DagCollector(resolver);
+            DagCollector collector = new DagCollector(resolver, warning -> {
+                log.println(warning);
+                log.flush();
+            });
             LevelDbScanner scanner = new LevelDbScanner();
             for (int index = 0; index < databases.size(); index++) {
                 Path source = databases.get(index);

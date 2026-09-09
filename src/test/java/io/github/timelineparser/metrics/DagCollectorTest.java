@@ -118,14 +118,25 @@ class DagCollectorTest {
         assertEquals(rows.get(0).getValues(), reverse.finish(null).get(0).getValues());
     }
 
-    @Test void conflictingSnapshotsAndApplicationIdentityAreRejected() throws Exception {
-        DagCollector collector = new DagCollector(new ResultRowsResolver());
-        TimelineEntity first = dag(DAG);
-        first.addOtherInfo("endTime", 4000L);
-        collector.accept(first);
-        TimelineEntity changed = dag(DAG);
-        changed.addOtherInfo("endTime", 4500L);
-        assertThrows(IOException.class, () -> collector.accept(changed));
+    @Test void conflictingSnapshotsKeepLatestLifecycleTimesInEitherOrder() throws Exception {
+        for (boolean reversed : new boolean[]{false, true}) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity older = dag(DAG);
+            older.addOtherInfo("startTime", 1000);
+            older.addOtherInfo("endTime", 4000L);
+            TimelineEntity newer = dag(DAG);
+            newer.addOtherInfo("startTime", 1500L);
+            newer.addOtherInfo("endTime", 4500L);
+            collector.accept(reversed ? newer : older);
+            assertDoesNotThrow(() -> collector.accept(reversed ? older : newer));
+            DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+            assertEquals(1500L, row.get("startTime"));
+            assertEquals(4500L, row.get("endTime"));
+            assertEquals(3000L, row.get("durationMilliseconds"));
+        }
+    }
+
+    @Test void conflictingApplicationIdentityIsRejected() {
         TimelineEntity wrongApp = dag("dag_1700000000000_0001_2");
         wrongApp.addOtherInfo("applicationId", "application_1700000000000_0002");
         assertThrows(IOException.class, () -> new DagCollector(new ResultRowsResolver()).accept(wrongApp));
@@ -270,15 +281,41 @@ class DagCollectorTest {
         assertTrue(collector.finish(Collections.singleton(APP)).isEmpty());
     }
 
-    @Test void conflictingLifecycleTimestampSourcesAreRejected() throws Exception {
-        DagCollector collector = new DagCollector(new ResultRowsResolver());
-        TimelineEntity base = dag(DAG);
-        base.addOtherInfo("endTime", 300L);
-        collector.accept(base);
-        TimelineEntity extra = entity("TEZ_DAG_EXTRA_INFO", DAG);
-        extra.addEvent(event("DAG_FINISHED", 400L));
-        collector.accept(extra);
-        assertThrows(IOException.class, () -> collector.finish(Collections.singleton(APP)));
+    @Test void conflictingLifecycleTimestampSourcesKeepLatestTimesInEitherDirection() throws Exception {
+        for (boolean eventsAreLater : new boolean[]{false, true}) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity base = dag(DAG);
+            base.addOtherInfo("startTime", eventsAreLater ? 100L : 200L);
+            base.addOtherInfo("endTime", eventsAreLater ? 300L : 400L);
+            collector.accept(base);
+            TimelineEntity extra = entity("TEZ_DAG_EXTRA_INFO", DAG);
+            extra.addEvent(event("DAG_STARTED", eventsAreLater ? 200L : 100L));
+            extra.addEvent(event("DAG_FINISHED", eventsAreLater ? 400L : 300L));
+            collector.accept(extra);
+            List<DagRecord> records = assertDoesNotThrow(() -> collector.finish(Collections.singleton(APP)));
+            DagRecord row = onlyRow(records);
+            assertEquals(200L, row.get("startTime"));
+            assertEquals(400L, row.get("endTime"));
+            assertEquals(200L, row.get("durationMilliseconds"));
+        }
+    }
+
+    @Test void repeatedLifecycleEventsKeepLatestTimesWithinAndAcrossEntities() throws Exception {
+        for (boolean splitEntities : new boolean[]{false, true}) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity first = dag(DAG);
+            TimelineEntity second = splitEntities ? dag(DAG) : first;
+            first.addEvent(event("DAG_STARTED", 300L));
+            first.addEvent(event("DAG_FINISHED", 600L));
+            second.addEvent(event("DAG_STARTED", 100L));
+            second.addEvent(event("DAG_FINISHED", 400L));
+            assertDoesNotThrow(() -> collector.accept(first));
+            if (splitEntities) assertDoesNotThrow(() -> collector.accept(second));
+            DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+            assertEquals(300L, row.get("startTime"));
+            assertEquals(600L, row.get("endTime"));
+            assertEquals(300L, row.get("durationMilliseconds"));
+        }
     }
 
     @Test void conflictingTerminalStatusCannotBecomeSuccessfulResults() throws Exception {
