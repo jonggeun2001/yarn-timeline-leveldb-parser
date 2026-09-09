@@ -16,7 +16,7 @@ public final class FstValueDecoder {
     }
 
     public Object decode(byte[] value) throws IOException {
-        if (value.length == 0) throw new IOException("Missing FST-encoded value");
+        if (value == null || value.length == 0) throw new IOException("Missing FST-encoded value");
         try {
             return current.getObjectInput(value).readObject();
         } catch (Exception first) {

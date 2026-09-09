@@ -67,6 +67,11 @@ public final class ResultRowsResolver {
     }
 
     void resolve(String dagId, String status, Map<String, Long> counters, Map<String, Object> result) {
+        resolve(dagId, status, counters, result, true);
+    }
+
+    void resolve(String dagId, String status, Map<String, Long> counters, Map<String, Object> result,
+                 boolean automaticRowsTrusted) {
         if (!"SUCCEEDED".equals(status)) return;
         Mapping mapping = mappings.get(dagId);
         if (mapping != null) {
@@ -75,6 +80,7 @@ public final class ResultRowsResolver {
             return;
         }
 
+        if (!automaticRowsTrusted) return;
         String selectedName = null;
         Long selectedCount = null;
         for (Map.Entry<String, Long> counter : counters.entrySet()) {
