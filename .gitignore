@@ -1,0 +1,55 @@
+# Maven output and locally installed tools
+/target/
+/.tools/
+*.class
+
+# IDE and agent-local state
+/.idea/
+/.vscode/
+/.serena/
+*.iml
+*.ipr
+*.iws
+
+# Local input copies, generated results, and scratch space
+/local/
+/data/
+/input/
+/output/
+/work/
+/tmp/
+*.parquet
+entity-ldb*/
+indexes-ldb*/
+starttime-ldb/
+domain-ldb/
+owner-ldb/
+*.ldb
+*.sst
+CURRENT
+MANIFEST-[0-9]*
+.work-*/
+.result-*.tmp
+.timeline-parser.lock
+
+# Credentials and machine-specific Maven configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+/.mvn/settings.xml
+/.mvn/toolchains.xml
+
+# Logs, JVM dumps, and editor / OS temporary files
+*.log
+*.hprof
+hs_err_pid*
+replay_pid*
+*.swp
+*.swo
+*~
+.DS_Store

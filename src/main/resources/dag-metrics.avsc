@@ -1,0 +1,27 @@
+{
+  "type": "record",
+  "name": "DagMetrics",
+  "namespace": "io.github.timelineparser",
+  "fields": [
+    {"name": "dagId", "type": "string"},
+    {"name": "applicationId", "type": "string"},
+    {"name": "user", "type": ["null", "string"], "default": null},
+    {"name": "hiveQueryId", "type": ["null", "string"], "default": null},
+    {"name": "startTime", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+    {"name": "endTime", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+    {"name": "resultRows", "type": ["null", "long"], "default": null},
+    {"name": "cpuMilliseconds", "type": ["null", "long"], "default": null},
+    {"name": "status", "type": ["null", "string"], "default": null},
+    {"name": "queueName", "type": ["null", "string"], "default": null},
+    {"name": "durationMilliseconds", "type": ["null", "long"], "default": null},
+    {"name": "gcMilliseconds", "type": ["null", "long"], "default": null},
+    {"name": "hdfsBytesRead", "type": ["null", "long"], "default": null},
+    {"name": "hdfsBytesWritten", "type": ["null", "long"], "default": null},
+    {"name": "shuffleBytes", "type": ["null", "long"], "default": null},
+    {"name": "additionalSpillBytesWritten", "type": ["null", "long"], "default": null},
+    {"name": "totalTasks", "type": ["null", "long"], "default": null},
+    {"name": "failedTaskAttempts", "type": ["null", "long"], "default": null},
+    {"name": "resultRowsKind", "type": ["null", "string"], "default": null},
+    {"name": "resultRowsSource", "type": ["null", "string"], "default": null}
+  ]
+}
