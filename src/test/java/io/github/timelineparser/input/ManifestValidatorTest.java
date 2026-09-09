@@ -3,6 +3,7 @@ package io.github.timelineparser.input;
 import org.fusesource.leveldbjni.JniDBFactory;
 import org.iq80.leveldb.DB;
 import org.iq80.leveldb.Options;
+import org.iq80.leveldb.WriteOptions;
 import org.iq80.leveldb.impl.FileChannelLogWriter;
 import org.iq80.leveldb.impl.InternalKey;
 import org.iq80.leveldb.impl.LogMonitors;
@@ -33,6 +34,22 @@ class ManifestValidatorTest {
         Path wal = onlyFile(dir, "*.log");
         assertEquals(0, Files.size(wal));
         assertDoesNotThrow(() -> LevelDbCatalog.validate(dir));
+    }
+
+    @Test void acceptsPreallocatedManifestFromAnOpenNativeDatabase() throws Exception {
+        Path dir = Files.createDirectory(temp.resolve("open-native"));
+        try (DB db = JniDBFactory.factory.open(dir.toFile(), new Options().createIfMissing(true))) {
+            db.put(new byte[]{1}, new byte[]{2}, new WriteOptions().sync(true));
+            Path manifest = manifest(dir);
+            byte[] before = Files.readAllBytes(manifest);
+            assertDoesNotThrow(() -> LevelDbCatalog.validate(dir));
+            try (WorkingCopy copy = WorkingCopy.create(dir, temp.resolve("work"));
+                 DB reopened = JniDBFactory.factory.open(copy.path().toFile(),
+                         new Options().createIfMissing(false).paranoidChecks(true))) {
+                assertArrayEquals(new byte[]{2}, reopened.get(new byte[]{1}));
+            }
+            assertArrayEquals(before, Files.readAllBytes(manifest));
+        }
     }
 
     @Test void rejectsDeletedCurrentWal() throws Exception {
@@ -67,7 +84,7 @@ class ManifestValidatorTest {
         assertThrows(IOException.class, () -> LevelDbCatalog.validate(dir));
     }
 
-    @Test void rejectsEveryIncompleteFinalHeaderLength() throws Exception {
+    @Test void nativeReaderStillRejectsTrailingPartialHeaders() throws Exception {
         Path dir = nativeDatabase("tail", false);
         Path manifest = manifest(dir);
         byte[] original = Files.readAllBytes(manifest);
@@ -76,7 +93,14 @@ class ManifestValidatorTest {
             byte[] tail = new byte[length];
             Arrays.fill(tail, (byte) 1);
             Files.write(manifest, tail, StandardOpenOption.APPEND);
-            assertThrows(IOException.class, () -> LevelDbCatalog.validate(dir), "partial header bytes=" + length);
+            assertDoesNotThrow(() -> LevelDbCatalog.validate(dir), "partial header bytes=" + length);
+            try (WorkingCopy copy = WorkingCopy.create(dir, temp.resolve("work"))) {
+                IOException failure = assertThrows(IOException.class, () -> {
+                    try (DB ignored = JniDBFactory.factory.open(copy.path().toFile(),
+                            new Options().createIfMissing(false).paranoidChecks(true))) { }
+                }, "native reader must reject partial header bytes=" + length);
+                assertTrue(failure.getMessage().contains("truncated record"));
+            }
         }
     }
 

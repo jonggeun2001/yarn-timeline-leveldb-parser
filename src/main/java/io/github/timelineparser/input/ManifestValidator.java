@@ -1,6 +1,5 @@
 package io.github.timelineparser.input;
 
-import org.iq80.leveldb.impl.FileChannelLogWriter;
 import org.iq80.leveldb.impl.FileMetaData;
 import org.iq80.leveldb.impl.Filename;
 import org.iq80.leveldb.impl.LogMonitors;
@@ -8,7 +7,6 @@ import org.iq80.leveldb.impl.LogReader;
 import org.iq80.leveldb.impl.VersionEdit;
 import org.iq80.leveldb.util.Slice;
 
-import java.io.Closeable;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -30,37 +28,19 @@ public final class ManifestValidator {
 
     public static void validate(Path directory, Path manifest) throws IOException {
         State state = new State();
-        Path replay = Files.createTempFile("timeline-manifest-replay-", ".log");
-        Throwable failure = null;
-        try {
-            // iq80's reader may ignore a final partial header. Reusing its writer
-            // on the raw logical records checks the complete native log envelope,
-            // including block fragmentation/padding, without reimplementing it.
-            FileChannelLogWriter writer = new FileChannelLogWriter(replay.toFile(), 0);
-            try (Closeable writerCloser = writer::close;
-                 FileChannel channel = FileChannel.open(manifest, StandardOpenOption.READ)) {
-                LogReader reader = new LogReader(channel, LogMonitors.throwExceptionMonitor(), true, 0);
-                Slice record;
-                while ((record = reader.readRecord()) != null) {
-                    state.apply(new VersionEdit(record));
-                    writer.addRecord(record, false);
-                }
-            }
-            if (Files.size(replay) != Files.size(manifest)) {
-                throw new IOException("Incomplete or noncanonical MANIFEST log: " + manifest);
+        try (FileChannel channel = FileChannel.open(manifest, StandardOpenOption.READ)) {
+            // Native writers may keep zero-filled preallocated space until close.
+            // Let the library parse physical records and verify CRCs; re-encoding
+            // logical records cannot reproduce the original file allocation.
+            // The working copy is also checked by the native reader when opened.
+            LogReader reader = new LogReader(channel, LogMonitors.throwExceptionMonitor(), true, 0);
+            Slice record;
+            while ((record = reader.readRecord()) != null) {
+                state.apply(new VersionEdit(record));
             }
             state.validateFiles(directory);
-        } catch (IOException | RuntimeException | Error e) {
-            failure = e;
-            if (e instanceof RuntimeException) throw new IOException("Invalid MANIFEST: " + manifest, e);
-            throw e;
-        } finally {
-            try {
-                Files.deleteIfExists(replay);
-            } catch (IOException cleanup) {
-                if (failure != null) failure.addSuppressed(cleanup);
-                else throw cleanup;
-            }
+        } catch (RuntimeException e) {
+            throw new IOException("Invalid MANIFEST: " + manifest, e);
         }
     }
 
