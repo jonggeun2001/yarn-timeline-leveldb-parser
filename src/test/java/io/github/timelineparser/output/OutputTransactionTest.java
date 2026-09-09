@@ -76,6 +76,29 @@ class OutputTransactionTest {
     }
 
     @Test
+    void uncheckedCleanupFailureStillReleasesTheOutputLock() throws Exception {
+        Path output = directory.resolve("output");
+        OutputTransaction transaction = OutputTransaction.open(output);
+        SecurityManager previous = System.getSecurityManager();
+        try {
+            System.setSecurityManager(new SecurityManager() {
+                @Override public void checkPermission(java.security.Permission permission) { }
+                @Override public void checkDelete(String file) {
+                    if (transaction.temporaryFile().toString().equals(file))
+                        throw new SecurityException("denied temporary cleanup");
+                }
+            });
+            IOException failure = assertThrows(IOException.class, transaction::close);
+            assertInstanceOf(SecurityException.class, failure.getCause());
+        } finally {
+            System.setSecurityManager(previous);
+        }
+        try (OutputTransaction ignored = OutputTransaction.open(output)) {
+            assertTrue(Files.exists(output.resolve(".timeline-parser.lock")));
+        }
+    }
+
+    @Test
     void rejectsTruncatedParquetBeforeReplacingPreviousResult() throws Exception {
         Path output = directory.resolve("output");
         Files.createDirectories(output);

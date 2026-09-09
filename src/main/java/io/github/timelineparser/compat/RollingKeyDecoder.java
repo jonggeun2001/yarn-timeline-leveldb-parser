@@ -12,6 +12,7 @@ import java.util.Arrays;
 
 public final class RollingKeyDecoder {
     public Header decode(byte[] key) throws IOException {
+        if (key == null) throw new IOException("Missing rolling entity key");
         Cursor cursor = new Cursor(key, 0);
         String type = cursor.delimitedString();
         long start = cursor.reverseLong();
@@ -57,6 +58,9 @@ public final class RollingKeyDecoder {
     }
 
     public static String text(byte[] bytes, int offset, int length) throws IOException {
+        if (bytes == null || offset < 0 || length < 0 || offset > bytes.length || length > bytes.length - offset) {
+            throw new IOException("Invalid LevelDB text byte range");
+        }
         try {
             return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)

@@ -10,6 +10,10 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class FstValueDecoderTest {
+    @Test void rejectsMissingValueAsDecodeFailure() {
+        assertThrows(IOException.class, () -> new FstValueDecoder().decode(null));
+    }
+
     @Test void readsLegacyHadoopLinkedHashMapClassRegistration() throws Exception {
         FSTConfiguration legacy = FSTConfiguration.createDefaultConfiguration();
         legacy.setShareReferences(false);

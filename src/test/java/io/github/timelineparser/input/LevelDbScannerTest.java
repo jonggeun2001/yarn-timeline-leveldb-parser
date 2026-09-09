@@ -136,9 +136,13 @@ class LevelDbScannerTest {
         Path database = new LevelDbCatalog().discover(source).get(0);
         replaceOtherInfoWithInvalidFst(database, "unusedConfiguration", 2);
         List<TimelineEntity> entities = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        LevelDbScanner scanner = new LevelDbScanner(warnings::add);
         try (WorkingCopy copy = WorkingCopy.create(database, temp.resolve("selective-work"))) {
-            assertDoesNotThrow(() -> new LevelDbScanner().scan(copy.path(), entities::add));
+            assertDoesNotThrow(() -> scanner.scan(copy.path(), entities::add));
         }
+        assertFalse(scanner.hasDiscardedEntities());
+        assertTrue(warnings.isEmpty());
         assertEquals(2, entities.size());
         TimelineEntity restoredDag = entities.stream().filter(e -> "TEZ_DAG_ID".equals(e.getEntityType())).findFirst().get();
         assertEquals(wanted, restoredDag.getOtherInfo());
@@ -146,15 +150,143 @@ class LevelDbScannerTest {
         assertTrue(restoredAttempt.getOtherInfo().isEmpty());
     }
 
-    @Test void malformedRequiredOtherInfoStillFailsTheScan() throws Exception {
+    @Test void malformedRequiredOtherInfoQuarantinesItsEntity() throws Exception {
         TimelineEntity dag = RollingStoreFixture.entity("TEZ_DAG_ID", "dag_1700000000000_0001_1", 1700000000000L);
         dag.addOtherInfo("user", "analyst");
         Path source = RollingStoreFixture.write(temp.resolve("required-source"), dag);
         Path database = new LevelDbCatalog().discover(source).get(0);
         replaceOtherInfoWithInvalidFst(database, "user", 1);
         try (WorkingCopy copy = WorkingCopy.create(database, temp.resolve("required-work"))) {
-            assertThrows(java.io.IOException.class, () -> new LevelDbScanner().scan(copy.path(), e -> { }));
+            List<TimelineEntity> entities = new ArrayList<>();
+            assertDoesNotThrow(() -> new LevelDbScanner().scan(copy.path(), entities::add));
+            assertTrue(entities.isEmpty());
         }
+    }
+
+    @Test void corruptColumnsSkipWholeEntityAndContinueWithHealthyNeighbors() throws Exception {
+        byte[][] suffixes = {"iuser".getBytes("UTF-8"), "zunknown".getBytes("UTF-8"),
+                new byte[]{'e', 1, 2}, new byte[]{'i', (byte) 0xff},
+                "rmissing-delimiter".getBytes("UTF-8"), new byte[]{'d'}};
+        for (int index = 0; index < suffixes.length; index++) {
+            Path database = rawDatabase("corrupt-" + index);
+            try (org.iq80.leveldb.DB db = open(database)) {
+                db.put(rollingKey("a", "iuser".getBytes("UTF-8")), fst("before"));
+                db.put(rollingKey("b", "iapplicationId".getBytes("UTF-8")), fst("application-1"));
+                db.put(rollingKey("b", suffixes[index]), index == 0
+                        ? new byte[]{99, 88, 77, 66, 55} : new byte[]{(byte) 0xff});
+                db.put(rollingKey("b", "iqueueName".getBytes("UTF-8")), fst("must-not-escape"));
+                db.put(rollingKey("c", "iuser".getBytes("UTF-8")), fst("after"));
+            }
+            List<TimelineEntity> actual = new ArrayList<>();
+            List<String> warnings = new ArrayList<>();
+            LevelDbScanner scanner = new LevelDbScanner(warnings::add);
+            assertDoesNotThrow(() -> scanner.scan(database, actual::add));
+            assertTrue(scanner.hasDiscardedEntities());
+            assertEquals(1, warnings.size());
+            assertTrue(warnings.get(0).contains(database.toString()));
+            assertTrue(warnings.get(0).contains("TEZ_DAG_ID/b"));
+            assertTrue(warnings.get(0).contains("key="));
+            assertEquals(Arrays.asList("a", "c"), entityIds(actual));
+            assertEquals("before", actual.get(0).getOtherInfo().get("user"));
+            assertEquals("after", actual.get(1).getOtherInfo().get("user"));
+        }
+    }
+
+    @Test void malformedHeadersDoNotAbortOrAttachTheirValuesToNeighboringEntities() throws Exception {
+        Path database = rawDatabase("bad-headers");
+        try (org.iq80.leveldb.DB db = open(database)) {
+            db.put("TEZ_DAG_ID\0".getBytes("UTF-8"), fst("orphan"));
+            db.put(rollingKey("a", "iuser".getBytes("UTF-8")), fst("before"));
+            byte[] malformed = rollingKey("b", new byte[0]);
+            malformed = Arrays.copyOf(malformed, malformed.length + 512);
+            Arrays.fill(malformed, malformed.length - 513, malformed.length, (byte) 0xff);
+            db.put(malformed, fst("orphan"));
+            db.put(rollingKey("c", "iuser".getBytes("UTF-8")), fst("after"));
+        }
+        List<TimelineEntity> actual = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        LevelDbScanner scanner = new LevelDbScanner(warnings::add);
+        assertDoesNotThrow(() -> scanner.scan(database, actual::add));
+        assertTrue(scanner.hasDiscardedEntities());
+        assertEquals(2, warnings.size());
+        assertTrue(warnings.get(0).contains(database.toString()));
+        assertTrue(warnings.get(0).contains("key=54455a5f4441475f494400"));
+        assertTrue(warnings.get(1).contains("...(length="));
+        assertTrue(warnings.get(1).length() < database.toString().length() + 300);
+        assertEquals(Arrays.asList("a", "c"), entityIds(actual));
+        assertEquals(Collections.singletonMap("user", "after"), actual.get(1).getOtherInfo());
+    }
+
+    @Test void consumerRecordFailuresDoNotPreventLaterEntities() throws Exception {
+        Path database = rawDatabase("bad-consumer-records");
+        try (org.iq80.leveldb.DB db = open(database)) {
+            for (String id : Arrays.asList("a", "b", "c")) db.put(rollingKey(id, new byte[0]), new byte[0]);
+        }
+        List<TimelineEntity> actual = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        LevelDbScanner scanner = new LevelDbScanner(warnings::add);
+        assertDoesNotThrow(() -> scanner.scan(database, entity -> {
+            if (entity.getEntityId().equals("a")) throw new java.io.IOException("bad record a");
+            if (entity.getEntityId().equals("b")) throw new IllegalArgumentException("bad record b");
+            actual.add(entity);
+        }));
+        assertEquals(Collections.singletonList("c"), entityIds(actual));
+        assertTrue(scanner.hasDiscardedEntities());
+        assertEquals(2, warnings.size());
+        assertTrue(warnings.get(0).contains("bad record a"));
+        assertTrue(warnings.get(1).contains("bad record b"));
+    }
+
+    @Test void failingWarningCallbackDoesNotStopHealthyEntities() throws Exception {
+        Path database = rawDatabase("bad-warning-callback");
+        try (org.iq80.leveldb.DB db = open(database)) {
+            db.put(rollingKey("a", "iuser".getBytes("UTF-8")), new byte[0]);
+            db.put(rollingKey("b", "iuser".getBytes("UTF-8")), fst("healthy"));
+        }
+        List<TimelineEntity> entities = new ArrayList<>();
+        LevelDbScanner scanner = new LevelDbScanner(message -> { throw new IllegalStateException("broken logger"); });
+        assertDoesNotThrow(() -> scanner.scan(database, entities::add));
+        assertEquals(Collections.singletonList("b"), entityIds(entities));
+        assertTrue(scanner.hasDiscardedEntities());
+    }
+
+    @Test void rejectsMissingScanArgumentsBeforeOpeningDatabase() throws Exception {
+        Path database = rawDatabase("null-consumer");
+        assertThrows(java.io.IOException.class, () -> new LevelDbScanner().scan(null, entity -> { }));
+        assertThrows(java.io.IOException.class, () -> new LevelDbScanner().scan(database, null));
+    }
+
+    private Path rawDatabase(String name) throws Exception {
+        Path database = Files.createDirectory(temp.resolve(name));
+        try (org.iq80.leveldb.DB ignored = org.fusesource.leveldbjni.JniDBFactory.factory.open(
+                database.toFile(), new org.iq80.leveldb.Options().createIfMissing(true))) { }
+        return database;
+    }
+
+    private static org.iq80.leveldb.DB open(Path database) throws Exception {
+        return org.fusesource.leveldbjni.JniDBFactory.factory.open(
+                database.toFile(), new org.iq80.leveldb.Options().createIfMissing(false));
+    }
+
+    private static byte[] rollingKey(String id, byte[] suffix) throws Exception {
+        java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream key = new java.io.DataOutputStream(buffer);
+        key.write("TEZ_DAG_ID\0".getBytes("UTF-8"));
+        key.writeLong(1700000000000L ^ Long.MAX_VALUE);
+        key.write(id.getBytes("UTF-8")); key.writeByte(0); key.write(suffix);
+        return buffer.toByteArray();
+    }
+
+    private static byte[] fst(Object value) {
+        org.nustaq.serialization.FSTConfiguration config = org.nustaq.serialization.FSTConfiguration.createDefaultConfiguration();
+        config.setShareReferences(false);
+        return config.asByteArray(value);
+    }
+
+    private static List<String> entityIds(List<TimelineEntity> entities) {
+        List<String> ids = new ArrayList<>();
+        for (TimelineEntity entity : entities) ids.add(entity.getEntityId());
+        return ids;
     }
 
     private static void replaceOtherInfoWithInvalidFst(Path database, String name, int expected) throws Exception {
