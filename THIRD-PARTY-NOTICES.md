@@ -15,7 +15,7 @@ This product includes software developed by The Apache Software Foundation (http
 - [Hadoop 3.1.1 RollingLevelDBTimelineStore](https://github.com/apache/hadoop/blob/rel/release-3.1.1/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-applicationhistoryservice/src/main/java/org/apache/hadoop/yarn/server/timeline/RollingLevelDBTimelineStore.java)
 - [Hadoop 3.1.1 NOTICE](https://github.com/apache/hadoop/blob/rel/release-3.1.1/NOTICE.txt)
 
-Tez 0.9.1과 Hive 3.1.3의 엔티티·카운터 규칙은 [요구사항의 근거](docs/requirements/timeline-leveldb-parser.md#10-근거)에 연결되어 있습니다. 두 실행 엔진을 애플리케이션의 직접 의존성으로 포함하지 않습니다.
+지표 해석에는 [Tez 엔티티 변환](https://github.com/apache/tez/blob/rel/release-0.9.1/tez-plugins/tez-yarn-timeline-history/src/main/java/org/apache/tez/dag/history/logging/ats/HistoryEventTimelineConversion.java), [Tez DagInfo](https://github.com/apache/tez/blob/rel/release-0.9.1/tez-plugins/tez-history-parser/src/main/java/org/apache/tez/history/parser/datamodel/DagInfo.java), [Hive FileSinkOperator](https://github.com/apache/hive/blob/rel/release-3.1.3/ql/src/java/org/apache/hadoop/hive/ql/exec/FileSinkOperator.java)의 규칙을 참고했습니다.
 
 ## 주요 의존성
 
