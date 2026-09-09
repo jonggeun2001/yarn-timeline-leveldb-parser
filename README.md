@@ -7,7 +7,7 @@ YARN Timeline의 로컬 Rolling LevelDB 사본에서 Hive DAG 지표를 추출�
 Java 8, Linux/macOS x86_64 환경에서 [의존성 포함 JAR](https://github.com/jonggeun2001/yarn-timeline-leveldb-parser/releases)를 실행합니다.
 
 ```sh
-java -jar timeline-parser-0.0.1-all.jar \
+java -jar timeline-parser-0.0.2-all.jar \
   --input ./local/input \
   --output ./local/output
 ```
