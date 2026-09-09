@@ -3,6 +3,7 @@ package io.github.timelineparser.cli;
 import static org.junit.jupiter.api.Assertions.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.timelineparser.fixture.RollingStoreFixture;
+import io.github.timelineparser.fixture.LogCapture;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 
+@org.junit.jupiter.api.parallel.ResourceLock(org.junit.jupiter.api.parallel.Resources.SYSTEM_ERR)
 class ParseCommandTest {
     @TempDir Path temp;
     private static final String APP = "application_1700000000000_0001";
@@ -256,7 +258,11 @@ class ParseCommandTest {
         CommandLine cli = new CommandLine(new ParseCommand());
         StringWriter errors = new StringWriter();
         cli.setOut(new java.io.PrintWriter(output)); cli.setErr(new java.io.PrintWriter(errors));
-        int code = cli.execute(args);
+        int code;
+        try (LogCapture logs = new LogCapture()) {
+            code = cli.execute(args);
+            output.append(logs.text());
+        }
         if (code == 0 || code == 2 || errors.toString().contains("completion")) return code;
         System.err.println(output);
         System.err.println(errors);

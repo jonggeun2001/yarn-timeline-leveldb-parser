@@ -148,19 +148,19 @@ public final class OutputTransaction implements AutoCloseable {
         IOException failure = null;
         try {
             Files.deleteIfExists(temporary);
-        } catch (IOException exception) {
-            failure = exception;
+        } catch (IOException | RuntimeException exception) {
+            failure = cleanupFailure(exception);
         }
         try {
             lock.release();
-        } catch (IOException exception) {
-            if (failure == null) failure = exception;
+        } catch (IOException | RuntimeException exception) {
+            if (failure == null) failure = cleanupFailure(exception);
             else failure.addSuppressed(exception);
         }
         try {
             lockChannel.close();
-        } catch (IOException exception) {
-            if (failure == null) failure = exception;
+        } catch (IOException | RuntimeException exception) {
+            if (failure == null) failure = cleanupFailure(exception);
             else failure.addSuppressed(exception);
         } finally {
             ACTIVE_OUTPUTS.remove(output);
@@ -169,6 +169,11 @@ public final class OutputTransaction implements AutoCloseable {
         if (failure != null) {
             throw failure;
         }
+    }
+
+    private IOException cleanupFailure(Exception exception) {
+        return exception instanceof IOException ? (IOException) exception
+                : new IOException("Cannot clean output transaction: " + output, exception);
     }
 
     public static final class LockUnavailableException extends IOException {

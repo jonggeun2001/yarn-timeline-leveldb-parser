@@ -133,6 +133,34 @@ class ResultRowsResolverTest {
                 group("CUSTOM_HIVE", "RECORDS_OUT_0", 42L)));
     }
 
+    @Test void sqlSelectionRejectsMalformedCounterGroupsEvenWhenBothDestinationsExist() throws Exception {
+        for (String sql : new String[] { "SELECT * FROM source", "INSERT INTO target SELECT * FROM source" })
+            assertNoRows(withSql(sql, group("HIVE", "RECORDS_OUT_0", 42L, "RECORDS_OUT_1", 999L),
+                    map("counterGroupName", "BROKEN", "counters", "not-a-list")));
+    }
+
+    @Test void sqlSelectionDoesNotDiscardInvalidCandidatesForTheExpectedDestination() throws Exception {
+        assertNoRows(withSql("SELECT * FROM source", group("HIVE",
+                "RECORDS_OUT_0", 42L, "RECORDS_OUT_0_other", 1.5d, "RECORDS_OUT_1", 999L)));
+        assertNoRows(withSql("INSERT INTO target SELECT * FROM source", group("HIVE",
+                "RECORDS_OUT_0", 999L, "RECORDS_OUT_1", 42L, "RECORDS_OUT_1_other", 1.5d)));
+    }
+
+    @Test void explicitMappingOverridesSqlDespiteMalformedUnrelatedCounterGroup() throws Exception {
+        DagCollector collector = new DagCollector(mapping("CTAS_WRITE"));
+        TimelineEntity extra = entity("TEZ_DAG_EXTRA_INFO", DAG);
+        extra.addOtherInfo("dagPlan", map("dagInfo", new ObjectMapper().writeValueAsString(
+                map("context", "Hive", "description", "CREATE TABLE target AS SELECT * FROM source"))));
+        extra.addOtherInfo("counters", counters(group("HIVE", "RECORDS_OUT_0", 42L, "RECORDS_OUT_1", 999L),
+                map("counterGroupName", "BROKEN", "counters", "not-a-list")));
+        collector.accept(extra);
+        collector.accept(dag(DAG));
+        DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+        assertEquals(42L, row.get("resultRows"));
+        assertEquals("CTAS_WRITE", row.get("resultRowsKind"));
+        assertEquals("RECORDS_OUT_0", row.get("resultRowsSource"));
+    }
+
     @Test void joinsSqlAndCountersFromSeparateSnapshotsInEitherOrder() throws Exception {
         TimelineEntity plan = entity("TEZ_DAG_EXTRA_INFO", DAG);
         plan.addOtherInfo("dagPlan", map("dagContext", map("context", "HIVE", "callerType", "HIVE_QUERY_ID",

@@ -3,6 +3,9 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Consumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.github.timelineparser.compat.FstValueDecoder;
 import io.github.timelineparser.compat.RollingKeyDecoder;
 import io.github.timelineparser.compat.RollingKeyDecoder.Header;
@@ -12,6 +15,7 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelineEvent;
 import org.fusesource.leveldbjni.JniDBFactory;
 import org.iq80.leveldb.*;
 public final class LevelDbScanner {
+    private static final Logger LOG = LoggerFactory.getLogger(LevelDbScanner.class);
     @FunctionalInterface public interface EntityConsumer { void accept(TimelineEntity entity) throws IOException; }
     private static final List<String> TYPES = Arrays.asList("TEZ_DAG_ID", "TEZ_DAG_EXTRA_INFO", "TEZ_APPLICATION_ATTEMPT", "YARN_APPLICATION");
     // Keep aligned with DagCollector's scalar metadata and structured inputs.
@@ -21,12 +25,19 @@ public final class LevelDbScanner {
             "startTime", "endTime", "numCompletedTasks", "numFailedTaskAttempts", "dagPlan", "counters")));
     private final RollingKeyDecoder keys = new RollingKeyDecoder();
     private final FstValueDecoder values = new FstValueDecoder();
+    private final Consumer<String> warningLog;
+    private boolean discardedEntities;
     private long entries;
     private long bytes;
+    public LevelDbScanner() { this(null); }
+    public LevelDbScanner(Consumer<String> warningLog) { this.warningLog = warningLog; }
+    public boolean hasDiscardedEntities() { return discardedEntities; }
     public long getEntries() { return entries; }
     public long getBytes() { return bytes; }
 
     public void scan(Path database, EntityConsumer consumer) throws IOException {
+        if (database == null) throw new IOException("LevelDB path is required");
+        if (consumer == null) throw new IOException("Entity consumer is required for LevelDB " + database);
         Options options = new Options().createIfMissing(false).paranoidChecks(true)
                 .cacheSize(8 * 1024 * 1024).maxOpenFiles(128);
         try (DB db = JniDBFactory.factory.open(database.toFile(), options)) {
@@ -41,24 +52,69 @@ public final class LevelDbScanner {
                         Map.Entry<byte[],byte[]> entry = it.next();
                         if (!startsWith(entry.getKey(), prefix)) break;
                         entries++; bytes += entry.getKey().length + entry.getValue().length;
-                        Header header = keys.decode(entry.getKey());
+                        Header header;
+                        try { header = keys.decode(entry.getKey()); }
+                        catch (IOException | RuntimeException e) {
+                            discardedEntities = true;
+                            warn("Skipping malformed LevelDB key in " + database
+                                    + " key=" + boundedHex(entry.getKey()), e);
+                            // Keep the last successfully decoded group's state. A bad key
+                            // cannot identify a new entity or revive a quarantined one.
+                            continue;
+                        }
                         if (!header.sameEntity(previous)) {
-                            if (entity != null) consumer.accept(entity);
+                            if (entity != null) emit(database, entity, consumer);
                             entity = new TimelineEntity();
                             entity.setEntityType(header.type); entity.setEntityId(header.id); entity.setStartTime(header.startTime);
                             previous = header;
                         }
+                        if (entity == null) continue; // Already quarantined until the next entity header.
                         try { apply(entity, header, entry.getKey(), entry.getValue()); }
                         catch (IOException | RuntimeException e) {
-                            throw new IOException("Cannot decode " + type + "/" + header.id + " in " + database, e);
+                            discardedEntities = true;
+                            warn("Skipping entity " + type + "/" + header.id + " in " + database
+                                    + " key=" + boundedHex(entry.getKey()), e);
+                            entity = null;
                         }
                     }
-                    if (entity != null) consumer.accept(entity);
+                    if (entity != null) emit(database, entity, consumer);
                 }
             }
         } catch (DBException | LinkageError e) {
             throw new IOException("Cannot read LevelDB " + database + ": " + e.getMessage(), e);
         }
+    }
+
+    private void emit(Path database, TimelineEntity entity, EntityConsumer consumer) {
+        try { consumer.accept(entity); }
+        catch (IOException | RuntimeException e) {
+            discardedEntities = true;
+            warn("Skipping entity " + entity.getEntityType() + "/" + entity.getEntityId()
+                    + " in " + database + " after record processing failed", e);
+        }
+    }
+
+    private void warn(String message, Exception exception) {
+        if (warningLog != null) {
+            try {
+                warningLog.accept(message + ": " + exception);
+                return;
+            } catch (RuntimeException callbackFailure) {
+                LOG.warn("LevelDB warning callback failed", callbackFailure);
+            }
+        }
+        LOG.warn(message, exception);
+    }
+
+    private static String boundedHex(byte[] key) {
+        int length = Math.min(key.length, 64);
+        char[] hex = "0123456789abcdef".toCharArray();
+        StringBuilder result = new StringBuilder(length * 2 + 32);
+        for (int i = 0; i < length; i++) {
+            result.append(hex[(key[i] & 255) >>> 4]).append(hex[key[i] & 15]);
+        }
+        if (key.length > length) result.append("...(length=").append(key.length).append(')');
+        return result.toString();
     }
 
     private void rejectMonolithicLayout(DB db) throws IOException {

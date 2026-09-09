@@ -67,8 +67,12 @@ public final class ResultRowsResolver {
                 : mapping.group.equals(group) && mapping.counter.equals(name);
     }
 
-    void resolve(String dagId, String status, Map<String, Long> counters,
-                 HiveSqlClassifier.Kind queryKind, Map<String, Object> result) {
+    void resolve(String dagId, String status, Map<String, Long> counters, Map<String, Object> result) {
+        resolve(dagId, status, counters, null, result, true);
+    }
+
+    void resolve(String dagId, String status, Map<String, Long> counters, HiveSqlClassifier.Kind queryKind,
+                 Map<String, Object> result, boolean automaticRowsTrusted) {
         if (!"SUCCEEDED".equals(status)) return;
         Mapping mapping = mappings.get(dagId);
         if (mapping != null) {
@@ -76,8 +80,8 @@ public final class ResultRowsResolver {
                     mapping.kind, mapping.counter, result);
             return;
         }
-        if (queryKind == HiveSqlClassifier.Kind.UNSUPPORTED) return;
 
+        if (!automaticRowsTrusted || queryKind == HiveSqlClassifier.Kind.UNSUPPORTED) return;
         // Hive retains ID 0 for SELECT results and starts registered write destinations at ID 1.
         String destination = queryKind == null ? null : queryKind == HiveSqlClassifier.Kind.SELECT ? "0" : "1";
 
