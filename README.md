@@ -30,9 +30,9 @@ java -jar timeline-parser-0.0.2-all.jar \
 
 기본적으로 application 종료 이벤트를 확인해 완료된 application만 처리합니다. `--completed-applications`는 이 판별을 목록으로 대체하며, 빈 목록은 0행 결과를 만듭니다. 목록 없이 대상 DAG의 application 완료 근거가 하나도 없으면 오류로 종료합니다.
 
-`resultRows`는 `SUCCEEDED` DAG의 모든 그룹에서 숫자 ID가 붙은 FileSink 카운터(`RECORDS_OUT_0`, `RECORDS_OUT_0_table` 등)가 하나일 때 자동으로 채웁니다. 0 이상인 원본 INT64 값을 기록하며, `resultRowsKind`는 `FILE_SINK_OUTPUT`, `resultRowsSource`는 카운터 이름입니다. 후보가 없거나 여러 개이면(다른 그룹의 같은 이름도 별도 후보), 값이 음수이거나 DAG가 성공하지 않았으면 null입니다.
+`resultRows`는 `SUCCEEDED` DAG의 Hive SQL을 분석해 SELECT는 `RECORDS_OUT_0` 계열, CTAS·단일 INSERT INTO·INSERT OVERWRITE(TABLE/DIRECTORY)는 `RECORDS_OUT_1` 계열에서 고릅니다. 해당 번호의 카운터가 하나이고 0 이상일 때 기록하며, 여러 출력 대상·지원하지 않는 SQL·누락·모호한 후보는 null입니다. SQL이 없으면 기존처럼 유일한 숫자 FileSink 카운터를 사용합니다.
 
-이 값은 FileSink 카운터의 DAG 집계값으로, 임시 materialization 출력이나 같은 이름의 sink 합산일 수 있어 최종 SELECT/CTAS 커밋 행 수를 보장하지 않습니다.
+`resultRowsKind`는 `FILE_SINK_OUTPUT`, `resultRowsSource`는 원본 카운터 이름입니다. 값은 DAG별 출력 카운터이며, 중간 출력이나 같은 이름의 sink 합산을 포함할 수 있어 쿼리 전체의 최종 결과·테이블 커밋 행 수를 보장하지 않습니다.
 
 특정 DAG의 최종 SELECT·CTAS sink를 검증했다면 다음 JSON을 `--result-rows-mapping`으로 지정해 자동 선택을 덮어쓸 수 있습니다.
 
@@ -65,7 +65,7 @@ DB 자체의 검증·읽기에 실패하면 다른 정상 DB는 계속 스캔하
 
 CLI 진행상황은 표준 출력으로, WARN·ERROR는 SLF4J와 `slf4j-simple`을 통해 기본적으로 표준 오류로 기록합니다. 로그에는 시각·로거 이름과 추적 가능한 DB·DAG·필드 정보를 포함하며, 예외가 있는 경우 원인 예외도 기록합니다. 파일 저장 등 로그 설정은 [빌드·릴리스](docs/development/releases.md)를 참고하세요.
 
-`query`의 형식 오류나 값 충돌도 경고 후 `null`로 무효화하며, 이후 정상값이 있어도 복구하지 않습니다. SQL 원문은 로그에 남기지 않습니다.
+`query`의 형식 오류나 같은 출처의 값 충돌도 경고 후 `null`로 무효화하며, 같은 출처의 이후 정상값으로 복구하지 않습니다. 여러 스냅샷에서도 `dagInfo` 원문이 `dagContext`보다 우선합니다. SQL 원문은 로그에 남기지 않습니다.
 
 [출력 컬럼](docs/reference/schema.md) · [빌드·릴리스](docs/development/releases.md)
 

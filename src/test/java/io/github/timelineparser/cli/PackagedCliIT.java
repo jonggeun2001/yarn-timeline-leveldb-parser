@@ -1,5 +1,6 @@
 package io.github.timelineparser.cli;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.timelineparser.fixture.RollingStoreFixture;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
@@ -53,6 +54,12 @@ class PackagedCliIT {
             dag.addOtherInfo("startTime", 1700000000100L);
             dag.addOtherInfo("endTime", 1700000001100L);
             entities.add(dag);
+            // Exercise the SQL parser inside the shaded JAR, including its runtime dependencies.
+            if (index == 1 || index == 2) {
+                entities.add(sqlExtraInfo(dag.getEntityId(), index == 1
+                        ? "SELECT id FROM source_table"
+                        : "CREATE TABLE target_table AS SELECT id FROM source_table"));
+            }
         }
         TimelineEntity app = RollingStoreFixture.entity("YARN_APPLICATION", appId, 1700000000000L);
         TimelineEvent end = new TimelineEvent();
@@ -97,13 +104,45 @@ class PackagedCliIT {
                 .withConf(new PlainParquetConfiguration()).build()) {
             GenericRecord row;
             while ((row = reader.read()) != null) {
-                assertTrue(ids.add(row.get("dagId").toString()));
+                String dagId = row.get("dagId").toString();
+                assertTrue(ids.add(dagId));
+                assertEquals(21, row.getSchema().getFields().size());
                 assertEquals("분석가", row.get("user").toString());
                 assertEquals(1000L, row.get("durationMilliseconds"));
-                assertNull(row.get("resultRows"));
+                if ("dag_1700000000000_0001_1".equals(dagId)) {
+                    assertEquals("SELECT id FROM source_table", row.get("query").toString());
+                    assertEquals(42L, row.get("resultRows"));
+                    assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString());
+                    assertEquals("RECORDS_OUT_0", row.get("resultRowsSource").toString());
+                } else if ("dag_1700000000000_0001_2".equals(dagId)) {
+                    assertEquals("CREATE TABLE target_table AS SELECT id FROM source_table", row.get("query").toString());
+                    assertEquals(999L, row.get("resultRows"));
+                    assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString());
+                    assertEquals("RECORDS_OUT_1", row.get("resultRowsSource").toString());
+                } else {
+                    assertNull(row.get("query"));
+                    assertNull(row.get("resultRows"));
+                }
             }
         }
         assertEquals(10000, ids.size());
+    }
+
+    private TimelineEntity sqlExtraInfo(String dagId, String sql) throws Exception {
+        TimelineEntity extra = RollingStoreFixture.entity("TEZ_DAG_EXTRA_INFO", dagId, 1700000000000L);
+        Map<String, String> dagInfo = new LinkedHashMap<>();
+        dagInfo.put("context", "Hive");
+        dagInfo.put("description", sql);
+        extra.addOtherInfo("dagPlan", Collections.singletonMap("dagInfo", new ObjectMapper().writeValueAsString(dagInfo)));
+        Map<String, Object> hive = new LinkedHashMap<>();
+        hive.put("counterGroupName", "HIVE");
+        Map<String, Object> select = new LinkedHashMap<>();
+        select.put("counterName", "RECORDS_OUT_0"); select.put("counterValue", 42L);
+        Map<String, Object> table = new LinkedHashMap<>();
+        table.put("counterName", "RECORDS_OUT_1"); table.put("counterValue", 999L);
+        hive.put("counters", Arrays.asList(select, table));
+        extra.addOtherInfo("counters", Collections.singletonMap("counterGroups", Collections.singletonList(hive)));
+        return extra;
     }
 
     private Map<String, String> hashes(Path root) throws Exception {

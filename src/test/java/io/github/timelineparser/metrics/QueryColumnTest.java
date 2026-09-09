@@ -40,6 +40,41 @@ class QueryColumnTest {
         assertEquals(SQL, row(collector).get("query"));
     }
 
+    @Test void rawDagInfoTakesPrecedenceAcrossSnapshotsInEitherOrder() throws Exception {
+        TimelineEntity raw = dag(map("dagInfo", dagInfo(SQL)));
+        TimelineEntity masked = dag(map("dagContext", map("context", "HIVE", "description", "SELECT '***'")));
+        for (List<TimelineEntity> snapshots : Arrays.asList(Arrays.asList(masked, raw), Arrays.asList(raw, masked))) {
+            DagCollector collector = collector();
+            for (TimelineEntity snapshot : snapshots) collector.accept(snapshot);
+            assertEquals(SQL, row(collector).get("query"));
+        }
+    }
+
+    @Test void conflictingFallbackCannotOverrideRawQuery() throws Exception {
+        DagCollector collector = collector();
+        collector.accept(dag(map("dagContext", map("context", "HIVE", "description", "SELECT '***'"))));
+        collector.accept(dag(map("dagContext", map("context", "HIVE", "description", "SELECT 'masked'"))));
+        assertNull(row(collector).get("query"));
+        collector.accept(dag(map("dagInfo", dagInfo(SQL))));
+        assertEquals(SQL, row(collector).get("query"));
+    }
+
+    @Test void invalidRawQueryCannotUseOtherwiseValidFallback() throws Exception {
+        DagCollector collector = collector();
+        collector.accept(dag(map("dagContext", map("context", "HIVE", "description", SQL))));
+        collector.accept(dag(map("dagInfo", "invalid JSON")));
+        collector.accept(dag(map("dagContext", map("context", "HIVE", "description", SQL))));
+        assertNull(row(collector).get("query"));
+    }
+
+    @Test void malformedFallbackStaysNullWithoutDiscardingTheDag() throws Exception {
+        DagCollector collector = collector();
+        collector.accept(dag(map("dagContext", map("context", "HIVE", "description", 42))));
+        collector.accept(dag(map("dagContext", map("context", "HIVE", "description", SQL))));
+        assertNull(row(collector).get("query"));
+        assertEquals(1700000000100L, row(collector).get("startTime"));
+    }
+
     @Test void missingAndNonHiveDescriptionsRemainNull() throws Exception {
         for (Map<String, Object> plan : Arrays.asList(map(), map("dagInfo", "{\"context\":\"Pig\",\"description\":\"not SQL\"}"),
                 map("dagContext", map("description", "unattributed text")))) {

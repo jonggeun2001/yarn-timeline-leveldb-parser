@@ -13,7 +13,7 @@ Parquet 메타데이터는 `timeline.schema.version=2`입니다. 버전 `1`의 �
 | `hiveQueryId` | STRING | Hive caller context의 쿼리 식별자 |
 | `startTime` | TIMESTAMP | DAG 실행 시작 시각. 제출 시각과 구분 |
 | `endTime` | TIMESTAMP | DAG 종료 시각 |
-| `resultRows` | INT64 | 자동 선택한 유일 FileSink 카운터 값 또는 DAG별 override 값 |
+| `resultRows` | INT64 | SQL의 출력 대상 번호로 선택한 FileSink 카운터 값 또는 DAG별 override 값 |
 | `cpuMilliseconds` | INT64 | 누적 CPU 시간, 밀리초 |
 | `status` | STRING | DAG 상태. application 상태와 별개 |
 | `queueName` | STRING | 실행 큐 |
@@ -38,13 +38,25 @@ Parquet 메타데이터는 `timeline.schema.version=2`입니다. 버전 `1`의 �
 
 `query`는 Hive `otherInfo.dagPlan.dagInfo`의 JSON `description`을 우선 사용하고, 없으면 Hive `otherInfo.dagPlan.dagContext.description`을 사용합니다. `dagInfo`는 Hive가 변수 치환 후 기록한 SQL이며, `dagContext`는 마스킹되었을 수 있습니다. 제출 전 텍스트를 복원하지 않으며, 기록된 공백·줄바꿈·주석을 그대로 보존합니다. 이 컬럼을 채울 때 SQL 내용 분류나 정규화를 하지 않습니다.
 
-원문이 없으면 `query`는 `null`입니다. 형식 오류나 같은 DAG에서 선택된 값의 충돌은 원문을 로그에 노출하지 않는 경고를 남기고 `null`로 무효화하며, 이후 정상값이 있어도 복구하지 않습니다. 두 출처의 값이 다르면 위 우선순위를 적용합니다.
+원문이 없으면 `query`는 `null`입니다. 같은 DAG의 동일 출처에서 형식 오류나 값 충돌이 발생하면 원문을 로그에 노출하지 않는 경고를 남기고 해당 출처를 `null`로 무효화하며, 같은 출처의 이후 정상값으로 복구하지 않습니다. 여러 스냅샷에서도 읽는 순서와 관계없이 `dagInfo` 원문이 `dagContext`보다 우선합니다. 원문이 무효화된 경우에는 caller context로 대체하지 않습니다.
 
 출처는 Apache Hive 3.1.3의 [Driver](https://github.com/apache/hive/blob/rel/release-3.1.3/ql/src/java/org/apache/hadoop/hive/ql/Driver.java#L486)·[TezTask](https://github.com/apache/hive/blob/rel/release-3.1.3/ql/src/java/org/apache/hadoop/hive/ql/exec/tez/TezTask.java#L374)와 Apache Tez 0.9.2의 [DAGUtils](https://github.com/apache/tez/blob/rel/release-0.9.2/tez-dag/src/main/java/org/apache/tez/dag/history/utils/DAGUtils.java#L159)에서 확인할 수 있습니다.
 
-`resultRows`는 `SUCCEEDED` DAG의 모든 그룹에서 이름이 `^RECORDS_OUT_[0-9]+(?:_.+)?$`에 일치하는 카운터를 찾습니다. 서로 다른 `(group, name)` 후보가 정확히 하나이면 0 이상인 원본 INT64 값을 그대로 기록하고, `resultRowsSource`에 카운터 이름을 넣습니다. 후보 없음·여러 후보(다른 그룹의 같은 이름 포함)·음수·비성공 DAG는 null입니다. 숫자 ID가 없는 `RECORDS_OUT_INTERMEDIATE`·`RECORDS_OUT_OPERATOR_*` 및 일반 `OUTPUT_RECORDS`는 제외합니다.
+`resultRows`는 `SUCCEEDED` DAG에서 Hive SQL 문법을 분석해 다음 번호를 선택합니다. 테이블명 접미사는 허용합니다.
 
-자동 값은 FileSink 카운터의 DAG 집계값으로, 임시 materialization 출력이나 같은 이름의 sink 합산일 수 있어 최종 SELECT/CTAS 커밋 행 수를 보장하지 않습니다.
+| SQL | 카운터 |
+| --- | --- |
+| SELECT, WITH … SELECT | `RECORDS_OUT_0` 계열 |
+| CTAS, 단일 INSERT INTO / INSERT OVERWRITE TABLE | `RECORDS_OUT_1` 계열 |
+| INSERT OVERWRITE [LOCAL] DIRECTORY | `RECORDS_OUT_1` 계열 |
+
+주석·인용 식별자·CTE·파티션 구문을 지원합니다. 다중 INSERT·여러 SQL 문장·UPDATE/DELETE/MERGE·기타 미지원 또는 해석 불가 SQL은 null입니다. 필요한 번호가 없으면 다른 번호로 대체하지 않습니다.
+
+SQL은 Hive `dagPlan.dagInfo`의 JSON `description`을 우선 사용하고, 없으면 Hive caller context의 `dagPlan.dagContext.description`을 사용합니다. SQL이 없을 때만 기존의 유일 숫자 카운터 선택을 적용합니다. 기록된 SQL은 위 규칙에 따라 `query` 컬럼에도 저장합니다.
+
+모든 그룹에서 해당 번호의 `(group, name)` 후보가 정확히 하나이고 값이 0 이상이면 원본 INT64 값을 기록합니다. 후보 없음·여러 후보·음수·비성공 DAG는 null입니다. `INTERMEDIATE`·`OPERATOR` 및 `OUTPUT_RECORDS`는 제외합니다. ATS는 0인 카운터를 생략할 수 있으므로 누락을 0으로 해석하지 않습니다.
+
+자동 값은 `FILE_SINK_OUTPUT`이며 `resultRowsSource`에 원본 카운터 이름을 기록합니다. 번호 선택은 일반적인 Hive 출력 경로에 근거합니다. 같은 이름의 중간 sink가 합산되거나 여러 DAG가 실행될 수 있으므로 쿼리 전체의 최종 결과·테이블 커밋 행 수를 보장하지 않습니다.
 
 카운터 구조·그룹명·카운터명이 손상되어 후보 전체를 확인할 수 없으면 해당 DAG의 자동 추출을 비활성화하고 `resultRows`·`resultRowsKind`·`resultRowsSource`를 모두 `null`로 유지합니다. 이름을 확인한 카운터의 값만 무효화된 경우에는 후보 수에 계속 포함하므로, 다른 FileSink가 유일한 후보로 잘못 선택되지 않습니다.
 

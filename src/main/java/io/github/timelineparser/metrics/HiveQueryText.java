@@ -13,10 +13,7 @@ final class HiveQueryText {
 
     private HiveQueryText() { }
 
-    static String read(Map<?, ?> plan) throws IOException {
-        String raw = readDagInfo(plan.get("dagInfo"));
-        if (raw != null) return raw;
-        Object value = plan.get("dagContext");
+    static String readDagContext(Object value) throws IOException {
         if (value == null) return null;
         if (!(value instanceof Map)) throw invalid();
         Map<?, ?> context = (Map<?, ?>) value;
@@ -24,7 +21,7 @@ final class HiveQueryText {
         return query(context.get("description"));
     }
 
-    private static String readDagInfo(Object value) throws IOException {
+    static String readDagInfo(Object value) throws IOException {
         if (value == null) return null;
         if (!(value instanceof String)) throw invalid();
         try (JsonParser parser = JSON.getFactory().createParser((String) value)) {
