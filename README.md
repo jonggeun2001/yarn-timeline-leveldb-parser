@@ -19,6 +19,8 @@ java -jar target/timeline-parser.jar \
 
 `leveldbjni` 1.8의 native library를 사용하므로 JVM과 native library의 CPU 아키텍처가 맞아야 합니다. 실행 대상은 Linux x86_64 및 macOS x86_64입니다. 현재 개발 검증은 Apple Silicon macOS에서 Rosetta를 통한 x86_64 Java 8로 수행했습니다. Linux 운영 환경과 Java 8보다 높은 JVM은 별도로 검증해야 합니다. ARM64 JVM용 LevelDB JNI로 자동 전환하지 않습니다.
 
+릴리스 JAR는 [GitHub Releases](https://github.com/jonggeun2001/yarn-timeline-leveldb-parser/releases)에서 받을 수 있습니다. `main`·`release`의 push와 PR은 CI 검증만 수행하며, `0.0.1` 같은 버전 태그를 push할 때만 의존성이 포함된 `timeline-parser-<version>-all.jar`와 SHA-256을 게시합니다. [CI와 릴리스 절차](docs/development/releases.md)를 참고하세요.
+
 ## 입력 준비
 
 `--input`은 rolling entity DB 하나 또는 여러 `entity-ldb.*` DB를 포함하는 상위 디렉터리입니다. `CURRENT`, 해당 `MANIFEST`, SST와 필요한 WAL 등 DB 파일이 함께 있는 **일관된 로컬 사본**을 준비하고, 실행 중에는 변경하지 않아야 합니다. 개별 `.ldb`/`.sst` 파일, ATS JSON 로그, 원격 URL은 입력 형식에 포함되지 않습니다.
@@ -100,7 +102,7 @@ java -jar target/timeline-parser.jar \
 
 ## 검증 범위
 
-Java 8에서 자동 테스트 66개가 통과했습니다. [검증 환경과 결과](docs/development/validation.md)에 상세 내용을 기록했습니다.
+Java 8에서 자동 테스트 68개가 통과했습니다. [검증 환경과 결과](docs/development/validation.md)에 상세 내용을 기록했습니다.
 
 Apache Hadoop 3.1.1의 실제 RollingLevelDBTimelineStore writer가 만든 fixture와 Java 8 native DB 읽기, Parquet 왕복 및 출력 잠금을 검증 대상으로 사용합니다. **실제 CDP 7.1.7 LevelDB 사본은 아직 제공되지 않았습니다.** CDP 패치에 따른 저장 레이아웃·FST 설정, application 완료 근거, SELECT/CTAS 매핑은 운영 사본으로 확인해야 합니다.
 

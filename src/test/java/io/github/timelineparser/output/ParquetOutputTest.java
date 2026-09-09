@@ -99,7 +99,7 @@ class ParquetOutputTest {
             assertEquals(PrimitiveType.PrimitiveTypeName.INT64,
                     footer.getFileMetaData().getSchema().getType("cpuMilliseconds").asPrimitiveType().getPrimitiveTypeName());
             assertEquals("1", footer.getFileMetaData().getKeyValueMetaData().get("timeline.schema.version"));
-            assertEquals("1.0.0-SNAPSHOT", footer.getFileMetaData().getKeyValueMetaData().get("timeline.parser.version"));
+            assertEquals(System.getProperty("parser.version"), footer.getFileMetaData().getKeyValueMetaData().get("timeline.parser.version"));
             assertEquals("tez-0.9.1-v1", footer.getFileMetaData().getKeyValueMetaData().get("timeline.mapping.version"));
             footer.getBlocks().forEach(block -> block.getColumns().forEach(column ->
                     assertEquals(CompressionCodecName.SNAPPY, column.getCodec())));

@@ -1,6 +1,7 @@
 package io.github.timelineparser.output;
 
 import io.github.timelineparser.domain.DagRecord;
+import io.github.timelineparser.BuildInfo;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
@@ -32,7 +33,7 @@ public final class ParquetOutput {
     private static final String MAPPING_VERSION_KEY = "timeline.mapping.version";
     private static final String ROW_COUNT_KEY = "timeline.row.count";
     private static final String SCHEMA_VERSION = "1";
-    private static final String PARSER_VERSION = "1.0.0-SNAPSHOT";
+    private static final String PARSER_VERSION = BuildInfo.version();
     private static final String MAPPING_VERSION = "tez-0.9.1-v1";
     private static final long ROW_GROUP_BYTES = 128L * 1024 * 1024;
 

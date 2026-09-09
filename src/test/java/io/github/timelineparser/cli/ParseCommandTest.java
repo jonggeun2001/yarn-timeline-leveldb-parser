@@ -64,6 +64,13 @@ class ParseCommandTest {
         assertEquals(2, run("--input", temp.toString()));
     }
 
+    @Test void reportsMavenProjectVersion() {
+        StringWriter output = new StringWriter();
+        CommandLine cli = new CommandLine(new ParseCommand()).setOut(new java.io.PrintWriter(output));
+        assertEquals(0, cli.execute("--version"));
+        assertEquals(System.getProperty("parser.version"), output.toString().trim());
+    }
+
     @Test void completedIdsRejectOverflowBeforeTouchingOutput() throws Exception {
         Path input = Files.createDirectory(temp.resolve("input"));
         Path output = Files.createDirectory(temp.resolve("output"));

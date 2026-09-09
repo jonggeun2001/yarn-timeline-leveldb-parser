@@ -24,6 +24,22 @@ import static org.junit.jupiter.api.Assertions.*;
 class PackagedCliIT {
     @TempDir Path temp;
 
+    @Test void packagedCliAndManifestReportTheMavenVersion() throws Exception {
+        String expected = System.getProperty("parser.version");
+        try (java.util.jar.JarFile jar = new java.util.jar.JarFile(System.getProperty("parser.jar"))) {
+            assertEquals(expected, jar.getManifest().getMainAttributes().getValue("Implementation-Version"));
+        }
+        Path log = temp.resolve("version.txt");
+        Process process = new ProcessBuilder(Paths.get(System.getProperty("java.home"), "bin", "java").toString(),
+                "-jar", System.getProperty("parser.jar"), "--version")
+                .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        try {
+            assertTrue(process.waitFor(30, TimeUnit.SECONDS));
+            assertEquals(0, process.exitValue());
+            assertEquals(expected, new String(Files.readAllBytes(log), StandardCharsets.UTF_8).trim());
+        } finally { process.destroyForcibly(); }
+    }
+
     @Test void convertsTenThousandDagsWithBoundedHeapAndSafeRerun() throws Exception {
         String appId = "application_1700000000000_0001";
         List<TimelineEntity> entities = new ArrayList<>();

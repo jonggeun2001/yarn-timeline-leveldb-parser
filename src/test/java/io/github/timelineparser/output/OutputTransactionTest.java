@@ -142,7 +142,7 @@ class OutputTransactionTest {
         }
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("timeline.schema.version", "1");
-        metadata.put("timeline.parser.version", "1.0.0-SNAPSHOT");
+        metadata.put("timeline.parser.version", System.getProperty("parser.version"));
         metadata.put("timeline.mapping.version", "tez-0.9.1-v1");
         metadata.put("timeline.row.count", "2");
         try (OutputTransaction transaction = OutputTransaction.open(directory.resolve("output"))) {

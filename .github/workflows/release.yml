@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-publish-${{ github.repository }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Verify and publish stable release
+    if: github.ref_type == 'tag' && !github.event.deleted
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out tagged source and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate new tag, POM version, and release ancestry
+        id: validate
+        env:
+          TAG_CREATED: ${{ github.event.created }}
+          TAG_FORCED: ${{ github.event.forced }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Release tags must have the exact stable version format X.Y.Z.' >&2
+            exit 1
+          fi
+          if [[ "$TAG_CREATED" != true || "$TAG_FORCED" == true ]]; then
+            echo 'Only creation of a new tag can publish a release; moving tags is rejected.' >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          version = ET.parse('pom.xml').getroot().findtext('{http://maven.apache.org/POM/4.0.0}version')
+          if version != os.environ['RELEASE_VERSION']:
+              raise SystemExit('Tag version does not match the POM project version.')
+          PY
+          git fetch --no-tags origin +refs/heads/release:refs/remotes/origin/release
+          tag_commit=$(git rev-parse "refs/tags/${RELEASE_VERSION}^{commit}")
+          tag_object=$(git rev-parse "refs/tags/${RELEASE_VERSION}")
+          if [[ "$tag_commit" != "$(git rev-parse HEAD)" ]]; then
+            echo 'Checked-out commit does not match the release tag.' >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/release
+          echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"
+          echo "tag_object=$tag_object" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse an existing draft or published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing_tags=$(gh api --paginate "repos/${GH_REPO}/releases?per_page=100" --jq '.[].tag_name')
+          if grep -Fxq -- "$RELEASE_VERSION" <<< "$existing_tags"; then
+            echo 'A release already exists for this tag; assets will not be replaced.' >&2
+            exit 1
+          fi
+
+      - name: Set up Java 8
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: zulu
+          java-version: '8'
+          architecture: x64
+
+      - name: Build and verify
+        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+
+      - name: Check runtime version and prepare release files
+        run: |
+          set -euo pipefail
+          actual_version=$(java -jar target/timeline-parser.jar --version)
+          if [[ "$actual_version" != "$RELEASE_VERSION" ]]; then
+            echo 'Executable JAR version does not match the release tag.' >&2
+            exit 1
+          fi
+          asset_dir="$RUNNER_TEMP/release-assets"
+          artifact="timeline-parser-${RELEASE_VERSION}-all.jar"
+          mkdir -p "$asset_dir"
+          cp target/timeline-parser.jar "$asset_dir/$artifact"
+          cd "$asset_dir"
+          sha256sum "$artifact" > "$artifact.sha256"
+
+      - name: Create draft, upload the JAR and checksum, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT_COMMIT: ${{ steps.validate.outputs.commit }}
+          TAG_OBJECT: ${{ steps.validate.outputs.tag_object }}
+        run: |
+          set -euo pipefail
+          remote_tag_object=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_VERSION" | cut -f1)
+          if [[ "$remote_tag_object" != "$TAG_OBJECT" ]]; then
+            echo 'The remote tag changed during the build; publication is rejected.' >&2
+            exit 1
+          fi
+          git fetch --no-tags origin +refs/heads/release:refs/remotes/origin/release
+          git merge-base --is-ancestor "$BUILT_COMMIT" refs/remotes/origin/release
+          asset_dir="$RUNNER_TEMP/release-assets"
+          artifact="timeline-parser-${RELEASE_VERSION}-all.jar"
+          # No overwrite flag: a concurrent or previous release must fail creation.
+          # Failed uploads leave a draft for inspection, never a partial public release.
+          gh release create "$RELEASE_VERSION" \
+            "$asset_dir/$artifact" "$asset_dir/$artifact.sha256" \
+            --verify-tag --target "$BUILT_COMMIT" --title "$RELEASE_VERSION" \
+            --generate-notes --draft
+          uploaded_assets=$(gh release view "$RELEASE_VERSION" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+          expected_assets=$(printf '%s\n' "$artifact" "$artifact.sha256" | LC_ALL=C sort)
+          if [[ "$uploaded_assets" != "$expected_assets" ]]; then
+            echo 'Draft release assets do not match the JAR and checksum; leaving it unpublished.' >&2
+            exit 1
+          fi
+          gh release edit "$RELEASE_VERSION" --draft=false --verify-tag

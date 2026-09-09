@@ -1,6 +1,7 @@
 package io.github.timelineparser.cli;
 
 import io.github.timelineparser.application.BatchRunner;
+import io.github.timelineparser.BuildInfo;
 import io.github.timelineparser.metrics.ResultRowsResolver;
 import io.github.timelineparser.output.OutputTransaction;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -18,9 +19,13 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
-@Command(name = "timeline-parser", mixinStandardHelpOptions = true, version = "1.0.0-SNAPSHOT",
+@Command(name = "timeline-parser", mixinStandardHelpOptions = true, versionProvider = ParseCommand.VersionProvider.class,
         description = "Convert a consistent local Rolling Timeline LevelDB snapshot to result.parquet.")
 public final class ParseCommand implements Callable<Integer> {
+    public static final class VersionProvider implements picocli.CommandLine.IVersionProvider {
+        @Override public String[] getVersion() { return new String[]{BuildInfo.version()}; }
+    }
+
     @Option(names = "--input", required = true, description = "Local entity LevelDB directory or its parent.")
     private Path input;
     @Option(names = "--output", required = true, description = "Local directory for atomic result.parquet replacement.")
