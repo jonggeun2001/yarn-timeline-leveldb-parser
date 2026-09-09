@@ -25,6 +25,15 @@ class ParseCommandTest {
         Path input = fixture(true);
         Path output = temp.resolve("output");
         assertEquals(0, run("--input", input.toString(), "--output", output.toString()));
+        try (ParquetReader<GenericRecord> reader = AvroParquetReader.<GenericRecord>builder(new LocalInputFile(output.resolve("result.parquet")))
+                .withConf(new PlainParquetConfiguration()).build()) {
+            GenericRecord row = reader.read();
+            assertNotNull(row);
+            assertEquals(137L, row.get("resultRows"));
+            assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString());
+            assertEquals("RECORDS_OUT_0", row.get("resultRowsSource").toString());
+            assertNull(reader.read());
+        }
         List<String> first = rows(output);
         assertEquals(1, first.size());
         assertTrue(first.get(0).contains(DAG));

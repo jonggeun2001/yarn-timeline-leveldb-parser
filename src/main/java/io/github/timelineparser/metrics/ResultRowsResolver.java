@@ -10,9 +10,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.regex.Pattern;
 
-/** Only explicit, externally validated sink mappings can produce a result row count. */
+/** Reads an unambiguous Hive FileSink counter, with optional per-DAG overrides. */
 public final class ResultRowsResolver {
+    // Hive FileSinkOperator uses the numeric destination ID, optionally followed by the table name.
+    private static final Pattern FILE_SINK_COUNTER = Pattern.compile("RECORDS_OUT_[0-9]+(?:_.+)?");
     private final Map<String, Mapping> mappings;
 
     public ResultRowsResolver() { this.mappings = Collections.emptyMap(); }
@@ -59,17 +62,37 @@ public final class ResultRowsResolver {
 
     boolean needsCounter(String dagId, String group, String name) {
         Mapping mapping = mappings.get(dagId);
-        return mapping != null && mapping.group.equals(group) && mapping.counter.equals(name);
+        return mapping == null ? FILE_SINK_COUNTER.matcher(name).matches()
+                : mapping.group.equals(group) && mapping.counter.equals(name);
     }
 
     void resolve(String dagId, String status, Map<String, Long> counters, Map<String, Object> result) {
+        if (!"SUCCEEDED".equals(status)) return;
         Mapping mapping = mappings.get(dagId);
-        if (mapping == null || !"SUCCEEDED".equals(status)) return;
-        Long count = counters.get(MetricsExtractor.counterKey(mapping.group, mapping.counter));
+        if (mapping != null) {
+            setResult(counters.get(MetricsExtractor.counterKey(mapping.group, mapping.counter)),
+                    mapping.kind, mapping.counter, result);
+            return;
+        }
+
+        String selectedName = null;
+        Long selectedCount = null;
+        for (Map.Entry<String, Long> counter : counters.entrySet()) {
+            String name = counter.getKey().substring(counter.getKey().indexOf('\u0000') + 1);
+            if (!FILE_SINK_COUNTER.matcher(name).matches()) continue;
+            // Distinct groups also represent distinct candidates. Never sum or choose the largest.
+            if (selectedName != null) return;
+            selectedName = name;
+            selectedCount = counter.getValue();
+        }
+        setResult(selectedCount, "FILE_SINK_OUTPUT", selectedName, result);
+    }
+
+    private static void setResult(Long count, String kind, String counter, Map<String, Object> result) {
         if (count == null || count < 0) return;
         result.put("resultRows", count);
-        result.put("resultRowsKind", mapping.kind);
-        result.put("resultRowsSource", mapping.counter);
+        result.put("resultRowsKind", kind);
+        result.put("resultRowsSource", counter);
     }
 
     private static final class Mapping {
