@@ -54,7 +54,8 @@ class DagCollectorTest {
         assertEquals(40L, row.get("additionalSpillBytesWritten"));
         assertEquals(7L, row.get("totalTasks"));
         assertEquals(2L, row.get("failedTaskAttempts"));
-        assertEquals(20, row.getValues().size());
+        assertEquals(21, row.getValues().size());
+        assertNull(row.get("query"));
         assertNull(row.get("resultRows"));
         assertNull(row.get("resultRowsKind"));
         assertNull(row.get("resultRowsSource"));

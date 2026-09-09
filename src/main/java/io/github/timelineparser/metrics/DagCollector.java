@@ -150,6 +150,7 @@ public final class DagCollector {
             if (event.getTimestamp() < 0) invalidateField(state, name, dagId, "negative event timestamp");
             else mergeTimestamp(state.eventTimes, name, event.getTimestamp(), dagId);
         }
+        collectQuery(dagId, info.get("dagPlan"), state);
         collectCallerContext(dagId, info.get("dagPlan"), state);
         try {
             collectCounters(dagId, info.get("counters"), state);
@@ -219,6 +220,10 @@ public final class DagCollector {
         for (Map.Entry<String, Long> time : state.eventTimes.entrySet())
             if (!state.invalidFields.contains(time.getKey())) mergeTimestamp(fields, time.getKey(), time.getValue(), dagId);
         for (String name : state.invalidFields) fields.remove(name);
+        // Raw Hive SQL wins over caller context even when read from a different snapshot.
+        // A present but invalid raw query must stay null instead of falling back.
+        if (!state.fields.containsKey("query")) fields.put("query", fields.get("queryFallback"));
+        fields.remove("queryFallback");
         return fields;
     }
 
@@ -254,6 +259,28 @@ public final class DagCollector {
         }
         if ("callerType".equals(name) && !"HIVE_QUERY_ID".equals(value)) state.explicitNonHive = true;
         merge(state.fields, state.invalidFields, name, value, dagId);
+    }
+
+    private void collectQuery(String dagId, Object planObject, State state) {
+        if (planObject == null || state.invalidFields.contains("query")) return;
+        if (!(planObject instanceof Map)) {
+            invalidateField(state, "query", dagId, "expected dagPlan object");
+            return;
+        }
+        Map<?, ?> plan = (Map<?, ?>) planObject;
+        try {
+            merge(state.fields, state.invalidFields, "query", HiveQueryText.readDagInfo(plan.get("dagInfo")), dagId);
+        } catch (IOException | RuntimeException exception) {
+            invalidateField(state, "query", dagId, "malformed Hive query metadata");
+            return;
+        }
+        if (state.fields.containsKey("query")) return;
+        try {
+            merge(state.fields, state.invalidFields, "queryFallback",
+                    HiveQueryText.readDagContext(plan.get("dagContext")), dagId);
+        } catch (IOException | RuntimeException exception) {
+            invalidateField(state, "queryFallback", dagId, "malformed Hive caller query metadata");
+        }
     }
 
     private void collectCallerContext(String dagId, Object planObject, State state) {

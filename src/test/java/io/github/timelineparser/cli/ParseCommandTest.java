@@ -177,7 +177,8 @@ class ParseCommandTest {
                     assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString(), query.sql);
                     assertEquals(query.counter, row.get("resultRowsSource").toString(), query.sql);
                 }
-                assertEquals(20, row.getSchema().getFields().size());
+                assertEquals(21, row.getSchema().getFields().size());
+                assertEquals(query.sql, row.get("query").toString());
                 assertEquals(APP, row.get("applicationId").toString());
                 assertEquals("hive-query-" + dagId, row.get("hiveQueryId").toString());
                 assertEquals(120L, row.get("cpuMilliseconds"));

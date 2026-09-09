@@ -22,6 +22,7 @@
     {"name": "totalTasks", "type": ["null", "long"], "default": null},
     {"name": "failedTaskAttempts", "type": ["null", "long"], "default": null},
     {"name": "resultRowsKind", "type": ["null", "string"], "default": null},
-    {"name": "resultRowsSource", "type": ["null", "string"], "default": null}
+    {"name": "resultRowsSource", "type": ["null", "string"], "default": null},
+    {"name": "query", "type": ["null", "string"], "default": null}
   ]
 }

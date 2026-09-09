@@ -106,18 +106,21 @@ class PackagedCliIT {
             while ((row = reader.read()) != null) {
                 String dagId = row.get("dagId").toString();
                 assertTrue(ids.add(dagId));
-                assertEquals(20, row.getSchema().getFields().size());
+                assertEquals(21, row.getSchema().getFields().size());
                 assertEquals("분석가", row.get("user").toString());
                 assertEquals(1000L, row.get("durationMilliseconds"));
                 if ("dag_1700000000000_0001_1".equals(dagId)) {
+                    assertEquals("SELECT id FROM source_table", row.get("query").toString());
                     assertEquals(42L, row.get("resultRows"));
                     assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString());
                     assertEquals("RECORDS_OUT_0", row.get("resultRowsSource").toString());
                 } else if ("dag_1700000000000_0001_2".equals(dagId)) {
+                    assertEquals("CREATE TABLE target_table AS SELECT id FROM source_table", row.get("query").toString());
                     assertEquals(999L, row.get("resultRows"));
                     assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString());
                     assertEquals("RECORDS_OUT_1", row.get("resultRowsSource").toString());
                 } else {
+                    assertNull(row.get("query"));
                     assertNull(row.get("resultRows"));
                 }
             }
