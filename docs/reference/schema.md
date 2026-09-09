@@ -26,7 +26,8 @@
 | `resultRowsKind` | STRING | `SELECT_RESULT` 또는 `CTAS_WRITE` |
 | `resultRowsSource` | STRING | 결과 행 수의 근거 카운터 이름 |
 
-- 누락·음수 지표는 `null`이며, 실제 `0`과 구분합니다. 종료가 시작보다 빠르면 종료 시각·경과시간도 `null`입니다.
+- `startTime`·`endTime`은 `otherInfo`와 `DAG_STARTED`·`DAG_FINISHED` 이벤트에서 수집한 값 중 각각 가장 늦은 시각입니다. 서로 다른 값은 경고를 남기고 병합하며, 입력 순서는 결과에 영향을 주지 않습니다.
+- 누락·음수 지표는 `null`이며, 실제 `0`과 구분합니다. 경과시간은 선택된 `endTime - startTime`으로 계산하며, 종료가 시작보다 빠르면 종료 시각·경과시간도 `null`입니다.
 - CPU·GC는 DAG가 보고한 태스크 누적값으로, 실제 경과시간과 다릅니다.
 - `callerType`이 Hive 이외로 명시되면 제외합니다. 값이 없으면 DAG를 포함하되 `hiveQueryId`는 `null`입니다.
 

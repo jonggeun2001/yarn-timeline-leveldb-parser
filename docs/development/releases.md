@@ -6,6 +6,12 @@ Java 8로 빌드·테스트하면 의존성을 포함한 `target/timeline-parser
 JAVA_HOME=/path/to/jdk8 ./mvnw clean verify
 ```
 
+worktree 변경사항은 다음 명령으로 테스트합니다. 이 검증 스크립트는 `./mvnw test`만 실행합니다.
+
+```sh
+JAVA_HOME=/path/to/jdk8 bash scripts/verify-worktree.sh
+```
+
 `main`·`release` push와 해당 브랜치 대상 PR은 [CI](../../.github/workflows/ci.yml)에서 Java 8 빌드·테스트를 실행합니다. **새 버전 태그 push 시에만** [Release](../../.github/workflows/release.yml)가 JAR와 SHA-256 파일을 게시합니다.
 
 1. `main`에서 `pom.xml` 버전을 변경하고 push해 CI 성공을 확인합니다.

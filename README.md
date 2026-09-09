@@ -18,6 +18,12 @@ java -jar timeline-parser-0.0.2-all.jar \
 - 운영 DB 대신 `CURRENT`, `MANIFEST`, SST, 필요한 WAL을 갖춘 **일관된 사본**을 사용하고 실행 중에는 변경하지 않습니다. `indexes-ldb`, `starttime-ldb`는 필요 없습니다.
 - 입력·출력 경로는 서로 겹치지 않아야 합니다. 예제의 `local/`은 Git에서 제외됩니다.
 
+같은 DAG의 `startTime`·`endTime`이 충돌하면 입력 순서와 관계없이 가장 늦은 시각을 선택하고 표준 출력에 경고를 남깁니다. `otherInfo` 간, `DAG_STARTED`·`DAG_FINISHED` 이벤트 간, 두 출처를 병합할 때 모두 적용하며, 같은 값이나 `null`은 경고를 남기지 않습니다. 그 외 값·식별자·카운터 충돌은 오류로 처리합니다. 경고의 시각은 UTC epoch 밀리초입니다.
+
+```text
+WARN Conflicting timestamp at dag_1700000000000_0001_1/startTime: previous=1700000000000 incoming=1700000001000 selected=1700000001000
+```
+
 ## 선택 옵션
 
 | 옵션 | 용도 |
