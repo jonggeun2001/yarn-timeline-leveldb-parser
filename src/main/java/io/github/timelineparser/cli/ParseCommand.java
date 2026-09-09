@@ -32,7 +32,7 @@ public final class ParseCommand implements Callable<Integer> {
     private Path output;
     @Option(names = "--completed-applications", description = "UTF-8 file of verified completed application IDs, one per line.")
     private Path completedApplications;
-    @Option(names = "--result-rows-mapping", description = "JSON file of externally verified final-sink counters by DAG ID.")
+    @Option(names = "--result-rows-mapping", description = "Optional JSON file overriding result-row counters and kinds by DAG ID.")
     private Path resultRowsMapping;
     @Spec private CommandSpec spec;
 

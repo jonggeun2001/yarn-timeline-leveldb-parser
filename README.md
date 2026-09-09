@@ -29,12 +29,16 @@ WARN Conflicting timestamp at dag_1700000000000_0001_1/startTime: previous=17000
 | 옵션 | 용도 |
 | --- | --- |
 | `--completed-applications FILE` | 직접 완료를 확인한 application ID 목록. UTF-8, 한 줄에 하나 |
-| `--result-rows-mapping FILE` | SELECT·CTAS 최종 출력 카운터를 지정한 JSON |
+| `--result-rows-mapping FILE` | DAG별 결과 행 수 카운터를 우선 지정하는 선택적 JSON override |
 | `--help`, `--version` | 도움말, 버전 출력 |
 
 기본적으로 application 종료 이벤트를 확인해 완료된 application만 처리합니다. `--completed-applications`는 이 판별을 목록으로 대체하며, 빈 목록은 0행 결과를 만듭니다. 목록 없이 대상 DAG의 application 완료 근거가 하나도 없으면 오류로 종료합니다.
 
-`resultRows`는 기본적으로 null입니다. 최종 출력 sink의 카운터를 확인한 DAG만 다음 형식으로 매핑합니다.
+`resultRows`는 `SUCCEEDED` DAG의 모든 그룹에서 숫자 ID가 붙은 FileSink 카운터(`RECORDS_OUT_0`, `RECORDS_OUT_0_table` 등)가 하나일 때 자동으로 채웁니다. 0 이상인 원본 INT64 값을 기록하며, `resultRowsKind`는 `FILE_SINK_OUTPUT`, `resultRowsSource`는 카운터 이름입니다. 후보가 없거나 여러 개이면(다른 그룹의 같은 이름도 별도 후보), 값이 음수이거나 DAG가 성공하지 않았으면 null입니다.
+
+이 값은 FileSink 카운터의 DAG 집계값으로, 임시 materialization 출력이나 같은 이름의 sink 합산일 수 있어 최종 SELECT/CTAS 커밋 행 수를 보장하지 않습니다.
+
+특정 DAG의 최종 SELECT·CTAS sink를 검증했다면 다음 JSON을 `--result-rows-mapping`으로 지정해 자동 선택을 덮어쓸 수 있습니다.
 
 ```json
 {
@@ -46,7 +50,7 @@ WARN Conflicting timestamp at dag_1700000000000_0001_1/startTime: previous=17000
 }
 ```
 
-CTAS는 `kind`를 `CTAS_WRITE`로 지정합니다. 그룹·카운터는 해당 DAG의 실제 값으로 바꾸며, 카운터 이름은 `RECORDS_OUT_`으로 시작해야 합니다. 성공한 DAG의 해당 카운터가 0 이상일 때만 행 수를 기록합니다.
+CTAS는 `kind`를 `CTAS_WRITE`로 지정합니다. 그룹·카운터는 해당 DAG의 검증된 값으로 바꾸며, 이름은 `RECORDS_OUT_`으로 시작해야 합니다. 매핑한 DAG는 지정한 카운터만 사용하며, 없거나 음수이면 null입니다. 매핑하지 않은 DAG에는 자동 추출을 적용합니다.
 
 [출력 컬럼](docs/reference/schema.md) · [빌드·릴리스](docs/development/releases.md)
 
