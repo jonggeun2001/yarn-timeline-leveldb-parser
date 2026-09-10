@@ -39,12 +39,16 @@ public final class WorkingCopy implements AutoCloseable {
     public Path path() { return path.resolve("database"); }
     @Override public void close() throws IOException {
         if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return;
+        Path marker = path.resolve(".timeline-parser-work");
         Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
             @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                Files.delete(file); return FileVisitResult.CONTINUE;
+                // Keep ownership recognizable until every copied file has been removed.
+                if (!file.equals(marker)) Files.delete(file);
+                return FileVisitResult.CONTINUE;
             }
             @Override public FileVisitResult postVisitDirectory(Path dir, IOException error) throws IOException {
                 if (error != null) throw error;
+                if (dir.equals(path)) Files.deleteIfExists(marker);
                 Files.delete(dir); return FileVisitResult.CONTINUE;
             }
         });

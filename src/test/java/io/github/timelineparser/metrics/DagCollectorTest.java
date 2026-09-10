@@ -54,7 +54,8 @@ class DagCollectorTest {
         assertEquals(40L, row.get("additionalSpillBytesWritten"));
         assertEquals(7L, row.get("totalTasks"));
         assertEquals(2L, row.get("failedTaskAttempts"));
-        assertEquals(20, row.getValues().size());
+        assertEquals(21, row.getValues().size());
+        assertNull(row.get("query"));
         assertNull(row.get("resultRows"));
         assertNull(row.get("resultRowsKind"));
         assertNull(row.get("resultRowsSource"));
@@ -118,27 +119,42 @@ class DagCollectorTest {
         assertEquals(rows.get(0).getValues(), reverse.finish(null).get(0).getValues());
     }
 
-    @Test void conflictingSnapshotsAndApplicationIdentityAreRejected() throws Exception {
-        DagCollector collector = new DagCollector(new ResultRowsResolver());
-        TimelineEntity first = dag(DAG);
-        first.addOtherInfo("endTime", 4000L);
-        collector.accept(first);
-        TimelineEntity changed = dag(DAG);
-        changed.addOtherInfo("endTime", 4500L);
-        assertThrows(IOException.class, () -> collector.accept(changed));
-        TimelineEntity wrongApp = dag("dag_1700000000000_0001_2");
-        wrongApp.addOtherInfo("applicationId", "application_1700000000000_0002");
-        assertThrows(IOException.class, () -> new DagCollector(new ResultRowsResolver()).accept(wrongApp));
+    @Test void conflictingSnapshotsKeepLatestLifecycleTimesInEitherOrder() throws Exception {
+        for (boolean reversed : new boolean[]{false, true}) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity older = dag(DAG);
+            older.addOtherInfo("startTime", 1000);
+            older.addOtherInfo("endTime", 4000L);
+            TimelineEntity newer = dag(DAG);
+            newer.addOtherInfo("startTime", 1500L);
+            newer.addOtherInfo("endTime", 4500L);
+            collector.accept(reversed ? newer : older);
+            assertDoesNotThrow(() -> collector.accept(reversed ? older : newer));
+            DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+            assertEquals(1500L, row.get("startTime"));
+            assertEquals(4500L, row.get("endTime"));
+            assertEquals(3000L, row.get("durationMilliseconds"));
+        }
     }
 
-    @Test void conflictingCountersFailAndIrrelevantCountersAreNotRetained() throws Exception {
+    @Test void conflictingApplicationIdentityIsQuarantined() throws Exception {
+        TimelineEntity wrongApp = dag("dag_1700000000000_0001_2");
+        wrongApp.addOtherInfo("applicationId", "application_1700000000000_0002");
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        assertDoesNotThrow(() -> collector.accept(wrongApp));
+        assertTrue(collector.finish(Collections.singleton(APP)).isEmpty());
+    }
+
+    @Test void conflictingCountersRemainUnknownAfterLaterDuplicates() throws Exception {
         DagCollector collector = new DagCollector(new ResultRowsResolver());
         TimelineEntity first = dag(DAG);
         first.addOtherInfo("counters", counters(group(TASK, "CPU_MILLISECONDS", 10L)));
         collector.accept(first);
         TimelineEntity extra = entity("TEZ_DAG_EXTRA_INFO", DAG);
         extra.addOtherInfo("counters", counters(group(TASK, "CPU_MILLISECONDS", 11L)));
-        assertThrows(IOException.class, () -> collector.accept(extra));
+        assertDoesNotThrow(() -> collector.accept(extra));
+        collector.accept(first);
+        assertNull(onlyRow(collector.finish(Collections.singleton(APP))).get("cpuMilliseconds"));
     }
 
     @Test void missingCountersStayNullAndInvalidDurationIsNotExported() throws Exception {
@@ -172,10 +188,11 @@ class DagCollectorTest {
         assertEquals(100L, row.get("durationMilliseconds"));
     }
 
-    @Test void acceptsEmptyDatasetAndRejectsMalformedDagIds() throws Exception {
+    @Test void acceptsEmptyDatasetAndSkipsMalformedDagIds() throws Exception {
         assertTrue(new DagCollector(new ResultRowsResolver()).finish(null).isEmpty());
-        assertThrows(IOException.class, () -> new DagCollector(new ResultRowsResolver())
-                .accept(entity("TEZ_DAG_ID", "not-a-dag")));
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        assertDoesNotThrow(() -> collector.accept(entity("TEZ_DAG_ID", "not-a-dag")));
+        assertTrue(collector.finish(null).isEmpty());
     }
 
     @Test void conflictingUserFilterDoesNotSilentlyOverrideIdentity() throws Exception {
@@ -184,17 +201,19 @@ class DagCollectorTest {
         dag.addOtherInfo("user", "alice");
         dag.addPrimaryFilter("user", "bob");
         collector.accept(dag);
-        assertThrows(IOException.class, () -> collector.finish(Collections.singleton(APP)));
+        assertNull(onlyRow(collector.finish(Collections.singleton(APP))).get("user"));
     }
 
-    @Test void selectedCounterWithoutValueIsAnErrorRatherThanMissingMetric() throws Exception {
+    @Test void selectedCounterWithoutValueStaysUnknown() throws Exception {
         TimelineEntity dag = dag(DAG);
         dag.addOtherInfo("counters", counters(map("counterGroupName", TASK, "counters",
                 Collections.singletonList(map("counterName", "CPU_MILLISECONDS")))));
-        assertThrows(IOException.class, () -> new DagCollector(new ResultRowsResolver()).accept(dag));
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        assertDoesNotThrow(() -> collector.accept(dag));
+        assertNull(onlyRow(collector.finish(Collections.singleton(APP))).get("cpuMilliseconds"));
     }
 
-    @Test void skipsUnfinishedApplicationsAndRejectsOrphanSelectedExtraInfo() throws Exception {
+    @Test void skipsUnfinishedApplicationsAndOrphanSelectedExtraInfo() throws Exception {
         DagCollector collector = new DagCollector(new ResultRowsResolver());
         collector.accept(dag(DAG));
         collector.accept(dag("dag_1700000000000_0002_1"));
@@ -203,7 +222,7 @@ class DagCollectorTest {
         assertEquals(DAG, onlyRow(collector.finish(null)).get("dagId"));
         DagCollector orphan = new DagCollector(new ResultRowsResolver());
         orphan.accept(entity("TEZ_DAG_EXTRA_INFO", DAG));
-        assertThrows(IOException.class, () -> orphan.finish(Collections.singleton(APP)));
+        assertTrue(orphan.finish(Collections.singleton(APP)).isEmpty());
     }
 
     @Test void acceptsNumericRepresentationsAndRetainsOnlyRequestedMetrics() throws Exception {
@@ -270,15 +289,41 @@ class DagCollectorTest {
         assertTrue(collector.finish(Collections.singleton(APP)).isEmpty());
     }
 
-    @Test void conflictingLifecycleTimestampSourcesAreRejected() throws Exception {
-        DagCollector collector = new DagCollector(new ResultRowsResolver());
-        TimelineEntity base = dag(DAG);
-        base.addOtherInfo("endTime", 300L);
-        collector.accept(base);
-        TimelineEntity extra = entity("TEZ_DAG_EXTRA_INFO", DAG);
-        extra.addEvent(event("DAG_FINISHED", 400L));
-        collector.accept(extra);
-        assertThrows(IOException.class, () -> collector.finish(Collections.singleton(APP)));
+    @Test void conflictingLifecycleTimestampSourcesKeepLatestTimesInEitherDirection() throws Exception {
+        for (boolean eventsAreLater : new boolean[]{false, true}) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity base = dag(DAG);
+            base.addOtherInfo("startTime", eventsAreLater ? 100L : 200L);
+            base.addOtherInfo("endTime", eventsAreLater ? 300L : 400L);
+            collector.accept(base);
+            TimelineEntity extra = entity("TEZ_DAG_EXTRA_INFO", DAG);
+            extra.addEvent(event("DAG_STARTED", eventsAreLater ? 200L : 100L));
+            extra.addEvent(event("DAG_FINISHED", eventsAreLater ? 400L : 300L));
+            collector.accept(extra);
+            List<DagRecord> records = assertDoesNotThrow(() -> collector.finish(Collections.singleton(APP)));
+            DagRecord row = onlyRow(records);
+            assertEquals(200L, row.get("startTime"));
+            assertEquals(400L, row.get("endTime"));
+            assertEquals(200L, row.get("durationMilliseconds"));
+        }
+    }
+
+    @Test void repeatedLifecycleEventsKeepLatestTimesWithinAndAcrossEntities() throws Exception {
+        for (boolean splitEntities : new boolean[]{false, true}) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity first = dag(DAG);
+            TimelineEntity second = splitEntities ? dag(DAG) : first;
+            first.addEvent(event("DAG_STARTED", 300L));
+            first.addEvent(event("DAG_FINISHED", 600L));
+            second.addEvent(event("DAG_STARTED", 100L));
+            second.addEvent(event("DAG_FINISHED", 400L));
+            assertDoesNotThrow(() -> collector.accept(first));
+            if (splitEntities) assertDoesNotThrow(() -> collector.accept(second));
+            DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+            assertEquals(300L, row.get("startTime"));
+            assertEquals(600L, row.get("endTime"));
+            assertEquals(300L, row.get("durationMilliseconds"));
+        }
     }
 
     @Test void conflictingTerminalStatusCannotBecomeSuccessfulResults() throws Exception {
@@ -286,7 +331,9 @@ class DagCollectorTest {
         TimelineEntity dag = dag(DAG);
         dag.addPrimaryFilter("status", "FAILED");
         collector.accept(dag);
-        assertThrows(IOException.class, () -> collector.finish(Collections.singleton(APP)));
+        DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+        assertNull(row.get("status"));
+        assertNull(row.get("resultRows"));
     }
 
     @Test void historicalNonterminalStatusFilterIsCompatibleWithFinalStatus() throws Exception {
@@ -298,6 +345,271 @@ class DagCollectorTest {
         dag.addEvent(event("DAG_FINISHED", 200L));
         collector.accept(dag);
         assertEquals("SUCCEEDED", onlyRow(collector.finish(Collections.singleton(APP))).get("status"));
+    }
+
+
+    @Test void malformedOptionalValuesStayUnknownWithoutLosingGoodMetrics() throws Exception {
+        List<String> warnings = new ArrayList<>();
+        DagCollector collector = new DagCollector(new ResultRowsResolver(), warnings::add);
+        TimelineEntity malformed = dag(DAG);
+        malformed.addOtherInfo("user", 42);
+        malformed.addOtherInfo("numCompletedTasks", "7");
+        malformed.addOtherInfo("numFailedTaskAttempts", 0.5);
+        malformed.addOtherInfo("startTime", "100");
+        malformed.addOtherInfo("counters", counters(group(TASK, "CPU_MILLISECONDS", "bad", "GC_TIME_MILLIS", 9L)));
+        assertDoesNotThrow(() -> collector.accept(malformed));
+        TimelineEntity later = dag(DAG);
+        later.addOtherInfo("user", "alice");
+        later.addOtherInfo("numCompletedTasks", 7L);
+        later.addOtherInfo("numFailedTaskAttempts", 0L);
+        later.addOtherInfo("startTime", 100L);
+        later.addEvent(event("DAG_STARTED", 200L));
+        later.addOtherInfo("counters", counters(group(TASK, "CPU_MILLISECONDS", 10L)));
+        collector.accept(later);
+        DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+        for (String key : Arrays.asList("user", "totalTasks", "failedTaskAttempts", "startTime", "cpuMilliseconds"))
+            assertNull(row.get(key), key);
+        assertEquals(9L, row.get("gcMilliseconds"));
+        assertTrue(warnings.stream().anyMatch(warning -> warning.contains(DAG)
+                && warning.contains("numCompletedTasks") && warning.contains("action=null")));
+    }
+
+    @Test void conflictingOptionalScalarsStayUnknownInEitherOrder() throws Exception {
+        for (boolean reversed : new boolean[]{false, true}) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity first = dag(DAG);
+            first.addOtherInfo("user", "alice");
+            first.addOtherInfo("numCompletedTasks", 3L);
+            TimelineEntity second = dag(DAG);
+            second.addOtherInfo("user", "bob");
+            second.addOtherInfo("numCompletedTasks", 4L);
+            collector.accept(reversed ? second : first);
+            assertDoesNotThrow(() -> collector.accept(reversed ? first : second));
+            collector.accept(first);
+            DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+            assertNull(row.get("user"));
+            assertNull(row.get("totalTasks"));
+        }
+    }
+
+    @Test void lateIdentityMismatchQuarantinesPreviouslyCollectedDagAndAllowsOthers() throws Exception {
+        for (String source : Arrays.asList("otherInfo", "filter", "relationship")) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            collector.accept(dag(DAG));
+            TimelineEntity invalid = entity("TEZ_DAG_EXTRA_INFO", DAG);
+            if ("otherInfo".equals(source)) invalid.addOtherInfo("applicationId", 123);
+            if ("filter".equals(source)) invalid.addPrimaryFilter("applicationId", "application_1700000000000_0002");
+            if ("relationship".equals(source)) invalid.addRelatedEntity("TEZ_APPLICATION", "broken");
+            assertDoesNotThrow(() -> collector.accept(invalid));
+            collector.accept(dag(DAG));
+            collector.accept(dag("dag_1700000000000_0001_2"));
+            assertEquals("dag_1700000000000_0001_2", onlyRow(collector.finish(Collections.singleton(APP))).get("dagId"));
+        }
+    }
+
+    @Test void invalidCallerTypeCannotPromoteExplicitNonHiveDagInEitherOrder() throws Exception {
+        for (Object badType : Arrays.asList(42, "HIVE_QUERY_ID")) {
+            for (boolean reversed : new boolean[]{false, true}) {
+                DagCollector collector = new DagCollector(new ResultRowsResolver());
+                TimelineEntity pig = dag(DAG);
+                pig.addOtherInfo("callerType", "PIG_SCRIPT_ID");
+                TimelineEntity malformed = entity("TEZ_DAG_EXTRA_INFO", DAG);
+                malformed.addOtherInfo("dagPlan", map("dagContext", map("callerType", badType)));
+                collector.accept(reversed ? malformed : pig);
+                assertDoesNotThrow(() -> collector.accept(reversed ? pig : malformed));
+                assertTrue(collector.finish(null).isEmpty());
+            }
+        }
+    }
+
+    @Test void terminalStatusConflictRemainsUnknownAfterRepeatedSuccessSnapshots() throws Exception {
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        TimelineEntity success = dag(DAG);
+        success.addOtherInfo("counters", counters(group("HIVE", "RECORDS_OUT_1", 12L)));
+        collector.accept(success);
+        TimelineEntity failed = dag(DAG);
+        failed.addOtherInfo("status", "FAILED");
+        assertDoesNotThrow(() -> collector.accept(failed));
+        collector.accept(success);
+        DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+        assertNull(row.get("status"));
+        assertNull(row.get("resultRows"));
+    }
+
+    @Test void malformedCandidateCounterCannotMakeAnotherCandidateFalselyUnique() throws Exception {
+        for (Object badValue : Arrays.asList("broken", 1.5, -1L)) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity dag = dag(DAG);
+            dag.addOtherInfo("counters", counters(group("HIVE", "RECORDS_OUT_1", 12L, "RECORDS_OUT_2", badValue)));
+            assertDoesNotThrow(() -> collector.accept(dag));
+            assertNull(onlyRow(collector.finish(Collections.singleton(APP))).get("resultRows"));
+        }
+    }
+
+    @Test void malformedCounterStructureDisablesUntrustedAutomaticRowsButPreservesGoodMetrics() throws Exception {
+        List<Object> malformedGroups = Arrays.asList(null, 42,
+                map("counterGroupName", 12, "counters", Collections.emptyList()),
+                map("counterGroupName", "HIVE", "counters", "bad"),
+                map("counterGroupName", "HIVE", "counters", Collections.singletonList(null)),
+                map("counterGroupName", "HIVE", "counters", Collections.singletonList(map("counterName", 42))));
+        for (Object malformed : malformedGroups) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver());
+            TimelineEntity dag = dag(DAG);
+            dag.addOtherInfo("counters", map("counterGroups", Arrays.asList(malformed,
+                    group(TASK, "CPU_MILLISECONDS", 5L), group("HIVE", "RECORDS_OUT_1", 12L))));
+            assertDoesNotThrow(() -> collector.accept(dag));
+            DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+            assertEquals(5L, row.get("cpuMilliseconds"));
+            assertNull(row.get("resultRows"));
+        }
+    }
+
+    @Test void malformedCallerContextAndFiltersKeepFieldsUnknownAndGoodCounter() throws Exception {
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        TimelineEntity dag = dag(DAG);
+        dag.addOtherInfo("callerType", "HIVE_QUERY_ID");
+        dag.addOtherInfo("callerId", "query-1");
+        dag.addOtherInfo("dagPlan", map("dagContext", "bad"));
+        dag.addPrimaryFilter("queueName", 123);
+        dag.addOtherInfo("counters", counters(group(TASK, "CPU_MILLISECONDS", 5L)));
+        assertDoesNotThrow(() -> collector.accept(dag));
+        DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+        assertNull(row.get("hiveQueryId"));
+        assertNull(row.get("queueName"));
+        assertEquals(5L, row.get("cpuMilliseconds"));
+    }
+
+    @Test void nullEntitiesAndContainersDoNotAbortValidDagCollection() throws Exception {
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        assertDoesNotThrow(() -> collector.accept(null));
+        TimelineEntity empty = entity("TEZ_DAG_ID", DAG);
+        empty.setOtherInfo(null);
+        empty.setPrimaryFilters(null);
+        empty.setRelatedEntities(null);
+        empty.setEvents(null);
+        assertDoesNotThrow(() -> collector.accept(empty));
+        assertEquals(DAG, onlyRow(collector.finish(Collections.singleton(APP))).get("dagId"));
+    }
+
+    @Test void malformedApplicationAndNullEventsDoNotFabricateCompletionEvidence() throws Exception {
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        collector.accept(dag(DAG));
+        assertDoesNotThrow(() -> collector.accept(finished("invalid")));
+        TimelineEntity app = entity("YARN_APPLICATION", APP);
+        app.setEvents(Arrays.asList((TimelineEvent) null));
+        assertDoesNotThrow(() -> collector.accept(app));
+        assertThrows(IOException.class, () -> collector.finish(null));
+        collector.accept(finished(APP));
+        assertEquals(DAG, onlyRow(collector.finish(null)).get("dagId"));
+    }
+
+    @Test void missingOrFailingWarningSinkDoesNotAbortDamagedDag() throws Exception {
+        for (java.util.function.Consumer<String> log : Arrays.<java.util.function.Consumer<String>>asList(
+                null, warning -> { throw new IllegalStateException("logger unavailable"); })) {
+            DagCollector collector = new DagCollector(new ResultRowsResolver(), log);
+            TimelineEntity dag = dag(DAG);
+            dag.addOtherInfo("user", 12);
+            assertDoesNotThrow(() -> collector.accept(dag));
+            assertNull(onlyRow(collector.finish(Collections.singleton(APP))).get("user"));
+        }
+    }
+
+
+    @Test void embeddedCounterKeySeparatorCannotHideAFileSinkCandidate() throws Exception {
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        TimelineEntity dag = dag(DAG);
+        dag.addOtherInfo("counters", counters(group("HIVE", "RECORDS_OUT_1", 12L),
+                group("broken\u0000group", "RECORDS_OUT_2", 4L)));
+        collector.accept(dag);
+        assertNull(onlyRow(collector.finish(Collections.singleton(APP))).get("resultRows"));
+    }
+
+    @Test void damagedIdentityCannotInjectAdditionalLogLines() throws Exception {
+        List<String> warnings = new ArrayList<>();
+        DagCollector collector = new DagCollector(new ResultRowsResolver(), warnings::add);
+        collector.accept(entity("TEZ_DAG_ID", "bad\nFORGED\rID"));
+        assertEquals(1, warnings.size());
+        assertFalse(warnings.get(0).contains("\n"));
+        assertFalse(warnings.get(0).contains("\r"));
+        assertTrue(warnings.get(0).contains("action=skip_entity"));
+    }
+
+    @Test void explicitMappingRemainsUsableWhenAnUnrelatedCounterStructureIsDamaged(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path temp) throws Exception {
+        java.nio.file.Path mapping = temp.resolve("rows.json");
+        java.nio.file.Files.write(mapping, ("{\"" + DAG + "\":{\"kind\":\"SELECT_RESULT\","
+                + "\"counterGroup\":\"HIVE\",\"counterName\":\"RECORDS_OUT_1\"}}")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        DagCollector collector = new DagCollector(ResultRowsResolver.fromFile(mapping));
+        TimelineEntity dag = dag(DAG);
+        dag.addOtherInfo("counters", map("counterGroups", Arrays.asList(null,
+                group("HIVE", "RECORDS_OUT_1", 12L))));
+        collector.accept(dag);
+        assertEquals(12L, onlyRow(collector.finish(Collections.singleton(APP))).get("resultRows"));
+    }
+
+    @Test void discardedInputIndicatorExcludesOptionalFallbackAndNormalScopeFiltering() throws Exception {
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        TimelineEntity dag = dag(DAG);
+        dag.addOtherInfo("user", 5);
+        collector.accept(dag);
+        assertTrue(collector.finish(Collections.emptySet()).isEmpty());
+        assertFalse(collector.hasDiscardedEntities());
+        TimelineEntity invalid = entity("TEZ_DAG_EXTRA_INFO", DAG);
+        invalid.addOtherInfo("applicationId", "wrong");
+        collector.accept(invalid);
+        assertTrue(collector.hasDiscardedEntities());
+        assertTrue(collector.finish(null).isEmpty());
+        DagCollector orphan = new DagCollector(new ResultRowsResolver());
+        orphan.accept(entity("TEZ_DAG_EXTRA_INFO", DAG));
+        assertTrue(orphan.finish(null).isEmpty());
+        assertTrue(orphan.hasDiscardedEntities());
+    }
+
+
+    @Test void unreadableCounterMapsCannotPublishACompletedPrefixAsUniqueRows() throws Exception {
+        Map<Integer, Object> integerKeys = new TreeMap<>();
+        integerKeys.put(1, "invalid structure");
+        List<Object> damagedCounters = Arrays.asList(integerKeys,
+                map("counterGroups", Arrays.asList(group("HIVE", "RECORDS_OUT_1", 12L), integerKeys)),
+                map("counterGroups", Collections.singletonList(map("counterGroupName", "HIVE", "counters",
+                        Arrays.asList(map("counterName", "RECORDS_OUT_1", "counterValue", 12L), integerKeys)))));
+        for (Object damaged : damagedCounters) {
+            List<String> warnings = new ArrayList<>();
+            DagCollector collector = new DagCollector(new ResultRowsResolver(), warnings::add);
+            TimelineEntity initial = dag(DAG);
+            initial.addOtherInfo("counters", counters(group(TASK, "CPU_MILLISECONDS", 5L)));
+            collector.accept(initial);
+            TimelineEntity partial = dag(DAG);
+            partial.addOtherInfo("counters", damaged);
+            assertDoesNotThrow(() -> collector.accept(partial));
+            TimelineEntity later = dag(DAG);
+            later.addOtherInfo("counters", counters(group("HIVE", "RECORDS_OUT_1", 12L)));
+            collector.accept(later);
+            DagRecord row = onlyRow(collector.finish(Collections.singleton(APP)));
+            assertNull(row.get("resultRows"));
+            assertEquals(5L, row.get("cpuMilliseconds"));
+            assertTrue(warnings.stream().anyMatch(warning -> warning.contains(DAG)
+                    && warning.contains("counters") && warning.contains("ClassCastException")
+                    && warning.contains("action=null")));
+        }
+    }
+
+    @Test void unexpectedMetadataReadFailureQuarantinesPriorAndPartialDagState() throws Exception {
+        Map<Integer, Object> integerKeys = new TreeMap<>();
+        integerKeys.put(1, "invalid caller context");
+        DagCollector collector = new DagCollector(new ResultRowsResolver());
+        TimelineEntity initial = dag(DAG);
+        initial.addOtherInfo("counters", counters(group("HIVE", "RECORDS_OUT_1", 12L)));
+        collector.accept(initial);
+        TimelineEntity partial = dag(DAG);
+        partial.addOtherInfo("user", "alice");
+        partial.addOtherInfo("dagPlan", integerKeys);
+        assertDoesNotThrow(() -> collector.accept(partial));
+        collector.accept(initial);
+        collector.accept(dag("dag_1700000000000_0001_2"));
+        assertEquals("dag_1700000000000_0001_2", onlyRow(collector.finish(Collections.singleton(APP))).get("dagId"));
+        assertTrue(collector.hasDiscardedEntities());
     }
 
     static DagRecord onlyRow(List<DagRecord> rows) {

@@ -27,6 +27,12 @@ final class MetricsExtractor {
 
     static DagRecord extract(String dagId, String applicationId, Map<String, Object> fields,
                              Map<String, Long> counters, ResultRowsResolver resolver) throws IOException {
+        return extract(dagId, applicationId, fields, counters, null, resolver, true);
+    }
+
+    static DagRecord extract(String dagId, String applicationId, Map<String, Object> fields,
+                             Map<String, Long> counters, HiveSqlClassifier.Kind queryKind, ResultRowsResolver resolver,
+                             boolean automaticRowsTrusted) throws IOException {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("dagId", dagId);
         result.put("applicationId", applicationId);
@@ -49,7 +55,8 @@ final class MetricsExtractor {
         result.put("failedTaskAttempts", nonnegative(number(fields.get("numFailedTaskAttempts"), dagId + "/numFailedTaskAttempts")));
         result.put("resultRowsKind", null);
         result.put("resultRowsSource", null);
-        resolver.resolve(dagId, (String) fields.get("status"), counters, result);
+        result.put("query", fields.get("query"));
+        resolver.resolve(dagId, (String) fields.get("status"), counters, queryKind, result, automaticRowsTrusted);
         return new DagRecord(result);
     }
 

@@ -1,7 +1,9 @@
 package io.github.timelineparser.cli;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.timelineparser.fixture.RollingStoreFixture;
+import io.github.timelineparser.fixture.LogCapture;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -16,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 
+@org.junit.jupiter.api.parallel.ResourceLock(org.junit.jupiter.api.parallel.Resources.SYSTEM_ERR)
 class ParseCommandTest {
     @TempDir Path temp;
     private static final String APP = "application_1700000000000_0001";
@@ -24,7 +27,18 @@ class ParseCommandTest {
     @Test void transformsRealHadoopDatabaseAndReplacesRatherThanAppending() throws Exception {
         Path input = fixture(true);
         Path output = temp.resolve("output");
-        assertEquals(0, run("--input", input.toString(), "--output", output.toString()));
+        StringWriter log = new StringWriter();
+        assertEquals(0, run(log, "--input", input.toString(), "--output", output.toString()));
+        assertFalse(log.toString().contains("WARN Conflicting timestamp"));
+        try (ParquetReader<GenericRecord> reader = AvroParquetReader.<GenericRecord>builder(new LocalInputFile(output.resolve("result.parquet")))
+                .withConf(new PlainParquetConfiguration()).build()) {
+            GenericRecord row = reader.read();
+            assertNotNull(row);
+            assertEquals(137L, row.get("resultRows"));
+            assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString());
+            assertEquals("RECORDS_OUT_0", row.get("resultRowsSource").toString());
+            assertNull(reader.read());
+        }
         List<String> first = rows(output);
         assertEquals(1, first.size());
         assertTrue(first.get(0).contains(DAG));
@@ -93,7 +107,7 @@ class ParseCommandTest {
         assertEquals(1, rows(output).size());
     }
 
-    @Test void usesVerifiedSelectAndCtasMappingsInTheFullPipeline() throws Exception {
+    @Test void usesExplicitSelectAndCtasOverridesInTheFullPipeline() throws Exception {
         Path input = fixture(true);
         Path output = temp.resolve("output");
         Path mapping = temp.resolve("mapping.json");
@@ -117,14 +131,186 @@ class ParseCommandTest {
         }
     }
 
+    @Test void selectsCountersFromSqlMetadataWithBothDestinationIdsPresent() throws Exception {
+        List<SqlCase> cases = Arrays.asList(
+                new SqlCase("SELECT id FROM source_table", 42L, "RECORDS_OUT_0"),
+                new SqlCase("CREATE TABLE target_table AS SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT INTO TABLE target_table SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT OVERWRITE TABLE target_table SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT INTO TABLE target_table PARTITION (ds='2026-01-01') SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT INTO TABLE target_table PARTITION (ds) SELECT id, ds FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT OVERWRITE TABLE target_table PARTITION (ds='2026-01-01') SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT OVERWRITE TABLE target_table PARTITION (ds) SELECT id, ds FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("INSERT OVERWRITE DIRECTORY '/tmp/query-output' SELECT id FROM source_table", 999L, "RECORDS_OUT_1"),
+                new SqlCase("FROM source_table INSERT INTO TABLE target_a SELECT id INSERT INTO TABLE target_b SELECT id", null, null));
+        Map<String, SqlCase> expected = new LinkedHashMap<>();
+        List<TimelineEntity> entities = new ArrayList<>();
+        for (int index = 0; index < cases.size(); index++) {
+            String dagId = "dag_1700000000000_0001_" + (index + 1);
+            TimelineEntity dag = dagWithTimes(1700000000100L, 1700000001100L);
+            dag.setEntityId(dagId);
+            dag.addOtherInfo("callerId", "hive-query-" + dagId);
+            entities.add(dag);
+            entities.add(sqlExtraInfo(dagId, cases.get(index).sql));
+            expected.put(dagId, cases.get(index));
+        }
+        entities.add(completedApplication());
+        Path input = RollingStoreFixture.write(temp.resolve("sql-input"), entities.toArray(new TimelineEntity[0]));
+        Path output = temp.resolve("sql-output");
+
+        assertEquals(0, run("--input", input.toString(), "--output", output.toString()));
+
+        Set<String> seen = new HashSet<>();
+        try (ParquetReader<GenericRecord> reader = AvroParquetReader.<GenericRecord>builder(new LocalInputFile(output.resolve("result.parquet")))
+                .withConf(new PlainParquetConfiguration()).build()) {
+            GenericRecord row;
+            while ((row = reader.read()) != null) {
+                String dagId = row.get("dagId").toString();
+                assertTrue(seen.add(dagId), "Duplicate DAG " + dagId);
+                SqlCase query = expected.get(dagId);
+                assertNotNull(query, "Unexpected DAG " + dagId);
+                assertEquals(query.rows, row.get("resultRows"), query.sql);
+                if (query.rows == null) {
+                    assertNull(row.get("resultRowsKind"), query.sql);
+                    assertNull(row.get("resultRowsSource"), query.sql);
+                } else {
+                    assertEquals("FILE_SINK_OUTPUT", row.get("resultRowsKind").toString(), query.sql);
+                    assertEquals(query.counter, row.get("resultRowsSource").toString(), query.sql);
+                }
+                assertEquals(21, row.getSchema().getFields().size());
+                assertEquals(query.sql, row.get("query").toString());
+                assertEquals(APP, row.get("applicationId").toString());
+                assertEquals("hive-query-" + dagId, row.get("hiveQueryId").toString());
+                assertEquals(120L, row.get("cpuMilliseconds"));
+                assertEquals(1700000000100L, row.get("startTime"));
+                assertEquals(1700000001100L, row.get("endTime"));
+                assertEquals(1000L, row.get("durationMilliseconds"));
+            }
+        }
+        assertEquals(expected.keySet(), seen);
+        List<String> first = rows(output);
+        assertEquals(0, run("--input", input.toString(), "--output", output.toString()));
+        assertEquals(first, rows(output), "SQL selection must remain identical on rerun");
+    }
+
+    @Test void keepsLatestEventAndOtherInfoTimestampsAndLogsConflicts() throws Exception {
+        TimelineEntity dag = dagWithTimes(1700000000100L, 1700000000900L);
+        dag.addEvent(event("DAG_STARTED", 1700000000200L));
+        dag.addEvent(event("DAG_STARTED", 1700000000300L));
+        dag.addEvent(event("DAG_FINISHED", 1700000001000L));
+        dag.addEvent(event("DAG_FINISHED", 1700000001200L));
+        Path input = RollingStoreFixture.write(temp.resolve("input"), dag, completedApplication());
+        Path output = temp.resolve("output");
+        StringWriter log = new StringWriter();
+
+        assertEquals(0, run(log, "--input", input.toString(), "--output", output.toString()));
+
+        assertTimestamps(output, 1700000000300L, 1700000001200L, 900L);
+        assertWarning(log, "startTime", 1700000000300L, 1700000000200L, 1700000000300L);
+        assertWarning(log, "endTime", 1700000001200L, 1700000001000L, 1700000001200L);
+        assertWarning(log, "startTime", 1700000000100L, 1700000000300L, 1700000000300L);
+        assertWarning(log, "endTime", 1700000000900L, 1700000001200L, 1700000001200L);
+    }
+
+    @Test void retainsLatestTimestampsWhenEarlierSnapshotIsReadLastAndLogsConflicts() throws Exception {
+        Path input = Files.createDirectory(temp.resolve("snapshots"));
+        // The catalog sorts paths: the snapshot with larger timestamps is scanned first.
+        RollingStoreFixture.write(input.resolve("a-later"),
+                dagWithTimes(1700000000400L, 1700000001800L), completedApplication());
+        RollingStoreFixture.write(input.resolve("z-earlier"),
+                dagWithTimes(1700000000200L, 1700000001400L), completedApplication());
+        Path output = temp.resolve("output");
+        StringWriter log = new StringWriter();
+
+        assertEquals(0, run(log, "--input", input.toString(), "--output", output.toString()));
+
+        assertTimestamps(output, 1700000000400L, 1700000001800L, 1400L);
+        assertWarning(log, "startTime", 1700000000400L, 1700000000200L, 1700000000400L);
+        assertWarning(log, "endTime", 1700000001800L, 1700000001400L, 1700000001800L);
+    }
+
+    @Test void equalTimestampsAndMissingValuesDoNotProduceConflictWarnings() throws Exception {
+        Path input = Files.createDirectory(temp.resolve("snapshots"));
+        TimelineEntity dag = dagWithTimes(1700000000100L, 1700000001100L);
+        dag.addEvent(event("DAG_STARTED", 1700000000100L));
+        dag.addEvent(event("DAG_FINISHED", 1700000001100L));
+        RollingStoreFixture.write(input.resolve("a-complete"), dag, completedApplication());
+        TimelineEntity sparse = RollingStoreFixture.entity("TEZ_DAG_ID", DAG, 1700000000000L);
+        sparse.addEvent(event("DAG_STARTED", 1700000000100L));
+        sparse.addEvent(event("DAG_FINISHED", 1700000001100L));
+        TimelineEntity extra = RollingStoreFixture.entity("TEZ_DAG_EXTRA_INFO", DAG, 1700000000000L);
+        extra.addOtherInfo("startTime", 1700000000100L);
+        extra.addOtherInfo("endTime", 1700000001100L);
+        RollingStoreFixture.write(input.resolve("z-sparse"), sparse, extra);
+        Path output = temp.resolve("output");
+        StringWriter log = new StringWriter();
+
+        assertEquals(0, run(log, "--input", input.toString(), "--output", output.toString()));
+
+        assertTimestamps(output, 1700000000100L, 1700000001100L, 1000L);
+        assertFalse(log.toString().contains("WARN Conflicting timestamp"), log::toString);
+    }
+
     private int run(String... args) {
+        return run(new StringWriter(), args);
+    }
+
+    private int run(StringWriter output, String... args) {
         CommandLine cli = new CommandLine(new ParseCommand());
-        StringWriter output = new StringWriter();
-        cli.setOut(new java.io.PrintWriter(output)); cli.setErr(new java.io.PrintWriter(output));
-        int code = cli.execute(args);
-        if (code == 0 || code == 2 || output.toString().contains("completion")) return code;
+        StringWriter errors = new StringWriter();
+        cli.setOut(new java.io.PrintWriter(output)); cli.setErr(new java.io.PrintWriter(errors));
+        int code;
+        try (LogCapture logs = new LogCapture()) {
+            code = cli.execute(args);
+            output.append(logs.text());
+        }
+        if (code == 0 || code == 2 || errors.toString().contains("completion")) return code;
         System.err.println(output);
+        System.err.println(errors);
         return code;
+    }
+
+    private void assertTimestamps(Path output, long startTime, long endTime, long durationMilliseconds) throws Exception {
+        try (ParquetReader<GenericRecord> reader = AvroParquetReader.<GenericRecord>builder(new LocalInputFile(output.resolve("result.parquet")))
+                .withConf(new PlainParquetConfiguration()).build()) {
+            GenericRecord row = reader.read();
+            assertNotNull(row);
+            assertEquals(DAG, row.get("dagId").toString());
+            assertEquals(APP, row.get("applicationId").toString());
+            assertEquals(startTime, row.get("startTime"));
+            assertEquals(endTime, row.get("endTime"));
+            assertEquals(durationMilliseconds, row.get("durationMilliseconds"));
+            assertNull(reader.read());
+        }
+    }
+
+    private void assertWarning(StringWriter log, String field, long previous, long incoming, long selected) {
+        String expected = "WARN Conflicting timestamp at " + DAG + "/" + field
+                + ": previous=" + previous + " incoming=" + incoming + " selected=" + selected;
+        assertTrue(log.toString().contains(expected), () -> "Missing warning: " + expected + "\nCLI output:\n" + log);
+    }
+
+    private TimelineEntity dagWithTimes(long startTime, long endTime) {
+        TimelineEntity dag = RollingStoreFixture.entity("TEZ_DAG_ID", DAG, 1700000000000L);
+        dag.addOtherInfo("applicationId", APP);
+        dag.addOtherInfo("callerType", "HIVE_QUERY_ID");
+        dag.addOtherInfo("startTime", startTime);
+        dag.addOtherInfo("endTime", endTime);
+        dag.addOtherInfo("status", "SUCCEEDED");
+        return dag;
+    }
+
+    private TimelineEntity completedApplication() {
+        TimelineEntity app = RollingStoreFixture.entity("YARN_APPLICATION", APP, 1700000000000L);
+        app.addEvent(event("YARN_APPLICATION_FINISHED", 1700000002100L));
+        return app;
+    }
+
+    private TimelineEvent event(String type, long timestamp) {
+        TimelineEvent event = new TimelineEvent();
+        event.setEventType(type);
+        event.setTimestamp(timestamp);
+        return event;
     }
 
     private List<String> rows(Path output) throws Exception {
@@ -135,6 +321,40 @@ class ParseCommandTest {
             while ((row = reader.read()) != null) rows.add(row.toString());
         }
         return rows;
+    }
+
+    private TimelineEntity sqlExtraInfo(String dagId, String sql) throws Exception {
+        TimelineEntity extra = RollingStoreFixture.entity("TEZ_DAG_EXTRA_INFO", dagId, 1700000000000L);
+        Map<String, String> dagInfo = new LinkedHashMap<>();
+        dagInfo.put("context", "Hive");
+        dagInfo.put("description", sql);
+        extra.addOtherInfo("dagPlan", Collections.singletonMap("dagInfo", new ObjectMapper().writeValueAsString(dagInfo)));
+        Map<String, Object> hive = new LinkedHashMap<>();
+        hive.put("counterGroupName", "HIVE");
+        hive.put("counters", Arrays.asList(counter("RECORDS_OUT_0", 42L), counter("RECORDS_OUT_1", 999L)));
+        Map<String, Object> task = new LinkedHashMap<>();
+        task.put("counterGroupName", "org.apache.tez.common.counters.TaskCounter");
+        task.put("counters", Collections.singletonList(counter("CPU_MILLISECONDS", 120L)));
+        extra.addOtherInfo("counters", Collections.singletonMap("counterGroups", Arrays.asList(hive, task)));
+        return extra;
+    }
+
+    private Map<String, Object> counter(String name, long value) {
+        Map<String, Object> counter = new LinkedHashMap<>();
+        counter.put("counterName", name);
+        counter.put("counterValue", value);
+        return counter;
+    }
+
+    private static final class SqlCase {
+        private final String sql;
+        private final Long rows;
+        private final String counter;
+        private SqlCase(String sql, Long rows, String counter) {
+            this.sql = sql;
+            this.rows = rows;
+            this.counter = counter;
+        }
     }
 
     private Path fixture(boolean completed) throws Exception {
